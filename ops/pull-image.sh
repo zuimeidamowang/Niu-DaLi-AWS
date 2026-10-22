@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# ops/pull-image.sh —— 从 GHCR 拉取指定镜像（默认 linux/amd64），可选记录发布台账。
+# ops/pull-image.sh —— 从 AWS 专用 GHCR 仓库拉取镜像（默认 linux/amd64），可选记录发布台账。
 #
 # 用法：
 #   ops/pull-image.sh <sha|image-ref> [--record]
-#     <完整40位sha> | <7-39位短sha> | ghcr.io/<owner>/niu-dali:sha-<sha>
+#     <完整40位sha> | <7-39位短sha> | ghcr.io/zuimeidamowang/niu-dali-aws:<tag>
 #     --record   把 "<UTC 时间> <ref> <digest>" 追加到 $RELEASES_DIR/pulled.log
 #
-# GHCR 为 public：本脚本不需要任何 GitHub 凭据，也不需要 docker login。
+# AWS 包设为 public 并验证匿名拉取后，本脚本无需 GitHub 凭据或 docker login。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -18,7 +18,8 @@ usage() {
 用法：pull-image.sh <sha|image-ref> [--record]
 
 参数：
-  <sha|image-ref>   完整40位sha | 7-39位短sha | ghcr.io/<owner>/niu-dali:sha-<sha>
+  <sha|image-ref>   完整40位sha | 7-39位短sha | ghcr.io/zuimeidamowang/niu-dali-aws:<tag>
+                   也接受该 AWS 仓库的 @sha256:<digest> 引用；其它仓库一律拒绝
   --record          记录到 $RELEASES_DIR/pulled.log
   -h, --help        显示本帮助
 USAGE
@@ -39,9 +40,9 @@ main() {
 
   [ -n "$arg" ] || { usage; die "缺少 <sha|image-ref> 参数"; }
 
-  require_cmd docker
   local ref
   ref="$(resolve_image_ref "$arg")"
+  require_cmd docker
   log "解析镜像引用：$arg → $ref"
 
   docker pull --platform linux/amd64 "$ref"

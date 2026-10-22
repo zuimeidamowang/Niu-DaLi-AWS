@@ -2,6 +2,10 @@
 
 团队项目：Niu-DaLi（大力牛-Niu DaLi）。
 
+本仓库 `zuimeidamowang/Niu-DaLi-AWS` 仅服务 AWS 环境。唯一应用镜像包是
+`ghcr.io/zuimeidamowang/niu-dali-aws`，与旧项目的代码发布、镜像标签、服务器配置和业务数据分别管理。
+禁止向旧项目推送本仓库任务分支、复用旧镜像包或通过本仓库操作其他服务器。
+
 适用场景：在 new-api 基础上维护团队自己的 API 服务。多人可能同时开发，也可能轮流接手；每个人在 Mac mini 或自己的电脑上开发，共用一个团队 Git 仓库，最终由 Ubuntu 服务器运行生产服务。保留原项目名称、QuantumNous 归属及许可证信息，继续遵守 [AGENTS.md](AGENTS.md)。
 
 ## 1. 固定分工
@@ -10,25 +14,27 @@
 | --- | --- |
 | 开发者电脑 | 独立克隆仓库，修改、测试、提交；使用测试配置和测试数据 |
 | 团队仓库 `origin` | 保存团队代码、任务分支、PR 和检查结果，是团队协作的唯一代码来源 |
-| 官方仓库 `upstream` | 获取上游更新；通过独立任务分支评估和合并 |
+| 官方 new-api 项目 | 保留来源归属；如需引入更新，另行授权并通过独立任务分支评估 |
 | `main` | 保存已审核的集成结果；合并不代表已上线 |
 | Ubuntu 生产服务器 | 运行负责人选定的版本，保存独立的生产配置与业务数据 |
 | 发布负责人 | 决定发布版本、核实备份、执行发布并记录结果；一次只允许一人操作生产发布 |
 
 先采用 `main` 加短期任务分支，不设置长期 `develop`、个人永久分支或服务器专用开发分支。多人不需要同时在线，通过已推送的分支和 PR 交接；不要共享同一个工作目录或正在编辑的分支。
 
-## 2. 团队仓库首次设置
+## 2. AWS 仓库与本机设置
 
-团队仓库由负责人指定为 `shiyujie167-ui/Niu-DaLi`。2026-09-28 在 GitHub 页面核实该仓库为公开模板仓库，已有一个 README 初始提交，并非空的私有仓库。负责人已在获知公开可见性后要求上传本机代码；仓库可见性未由代理更改。当前本机使用同一仓库的 SSH 地址：
+本工作目录的唯一开发与发布远程为：
 
 ```text
-origin    git@github.com:shiyujie167-ui/Niu-DaLi.git
-upstream  https://github.com/QuantumNous/new-api.git
+origin    git@github.com:zuimeidamowang/Niu-DaLi-AWS.git
 ```
 
-本机已设置 `remote.pushDefault=origin` 和 `pull.ff=only`，取消了本地 `main` 对官方分支的旧跟踪关系。团队仓库的 README 初始历史与本地上游历史已完成整合。首次上传使用临时协作分支；随后负责人明确要求直接更新到 `main`，本次初始化按该指示将完整代码纳入 `main`，保留双方历史。后续日常开发仍遵循任务分支和 PR 规则。上述是本机 Git 配置，不会随提交传给其他成员。
+本机 `remote.pushDefault=origin`，`main` 跟踪 AWS 的 `origin/main`。不把旧项目配置为本仓库的开发或发布远程。
+每次推送前核实实际远程 URL，显式使用 `git push -u origin HEAD`，不向其他仓库镜像同步。
 
-本机原先没有 SSH 身份密钥，22 端口连接也被中断。现已在 `~/.ssh/` 生成专用 Ed25519 密钥，并通过本仓库的 `core.sshCommand` 使用 SSH 443 端口、固定身份文件和已核实的 GitHub 主机公钥；这不会修改其他项目的 SSH 配置。私钥权限为 `0600`，不进入项目目录或 Git。GitHub 已保存本机的仓库专用读写 Deploy key，`git ls-remote origin` 和 `git fetch --no-tags origin` 均已通过。初次获取的远程 `main` 为 `c409330663feb20cad4d0bc2582f8e9f1a364d3c`。首次代码导入保留该提交及上游历史，不使用强推；分支保护仍需另行设置。每位协作者应使用自己的凭据，不能复制这台 Mac 的私钥。
+本机 Git 使用仓库级 SSH 443 配置；其他成员使用各自凭据，不复制私钥。真实密钥、服务器登录文件和环境配置不进入 Git。
+已继承的 new-api 历史、QuantumNous 归属与许可证保留；环境隔离不删除来源记录，也不重写任何仓库历史。
+官方来源：<https://github.com/QuantumNous/new-api.git>。此链接仅记录来源归属，不作为本目录的开发或发布远程。
 
 先检查：
 
@@ -37,23 +43,16 @@ git status --short --branch
 git remote -v
 ```
 
-其他已有官方克隆的电脑，仅当 `origin` 确认仍是官方仓库、尚无 `upstream` 时，才执行下面的配置；当前本机已完成，不要重复执行：
-
-```sh
-git remote rename origin upstream
-git remote add origin git@github.com:shiyujie167-ui/Niu-DaLi.git
-```
-
-团队仓库应保留项目现有 Git 历史。初次导入由维护者核实仓库目标、分支和待提交文件后执行，不使用 `git push --mirror` 或强制推送覆盖已有团队历史。初次将 `main` 导入空仓库是维护者执行的一次性初始化；日常开发仍全部通过任务分支和 PR。若远程已有 README 或其他提交，先比较双方历史并决定整合方式，不盲目推送或覆盖。
+已有工作目录若仍关联其他项目，应先检查其工作区和远程配置，不自动覆盖远程、丢弃改动或向旧项目推送。
+本 AWS 目录不保留旧项目的 `upstream`；禁止 `git push --mirror`、强制推送或跨项目自动同步。
 
 确认团队 `main` 存在后，运行 `git fetch origin`，再用 `git branch --set-upstream-to=origin/main main` 绑定本地分支，并检查 `git remote -v` 和 `git branch -vv`。
 
-新成员在团队历史导入后直接克隆，不需要重命名远程：
+新成员独立克隆 AWS 仓库：
 
 ```sh
-git clone git@github.com:shiyujie167-ui/Niu-DaLi.git new-api-team
-cd new-api-team
-git remote add upstream https://github.com/QuantumNous/new-api.git
+git clone git@github.com:zuimeidamowang/Niu-DaLi-AWS.git
+cd Niu-DaLi-AWS
 git config --local remote.pushDefault origin
 git config --local pull.ff only
 ```
@@ -68,7 +67,9 @@ git config --local pull.ff only
 - 当前 [CI](.github/workflows/ci.yml) 包括 `Backend vet, build, and test` 和 `Frontend typecheck and test`。前端构建及领域专项验证仍按 `AGENTS.md` / `web/AGENTS.md` 执行，不能仅凭这两个检查推断所有要求均已覆盖。
 - GitHub 私有仓库的分支保护等功能取决于账号方案；确认规则实际可用并已启用。此 Markdown 文件本身不会开启服务端限制。
 
-现有 Docker、Release、Electron 等发布工作流沿用上游发布配置，有些会被标签推送触发。团队启用发布工作流前，先检查触发条件、凭据和目标仓库。现阶段使用完整提交 SHA 记录生产版本，不通过随意推送标签来触发发布，也不把原有工作流视为 Ubuntu 自动部署。需要团队自动发布时另行配置，保留上游项目归属信息。
+AWS 应用镜像只通过 `.github/workflows/publish-image.yml` 发布到独立 `niu-dali-aws` 包。
+旧 Docker Hub、GitCode 工作流在本仓库跳过；普通 CI 和只写当前仓库的 Release/Electron 工作流保留。
+现阶段使用完整提交 SHA 记录生产版本；构建、合并与服务器部署是独立动作。新包的 public 权限须单独设置并验证。
 
 ## 3. 每次开始开发
 
@@ -126,7 +127,8 @@ git switch --track origin/feat/channel-setup
 
 维护者异步检查 PR 的范围、行为、验证结果及配置影响，满足评审和检查要求后合并。日常任务使用 squash merge；首次代码导入和上游同步使用 merge commit，保留远程初始提交与上游的完整祖先关系。服务器发布记录使用合并到 `main` 后的提交 SHA，而不是功能分支合并前的 SHA。
 
-上游更新也走独立 PR：从最新团队 `main` 创建 `chore/sync-upstream-<date>`，获取 `upstream` 后选择明确的上游版本或提交合并。解决冲突、验证团队定制功能，再评审合入。不要将官方 `main` 强制覆盖团队 `main`，不要让生产服务器直接拉上游更新。
+如需引入官方 new-api 更新，先明确授权来源和版本，再从 AWS `main` 创建独立任务分支评估与验证。
+不自动获取或合并旧部署项目的代码，不将外部 `main` 覆盖 AWS `main`，生产服务器只消费经审核的 AWS 镜像。
 
 ## 6. Ubuntu 生产发布
 
@@ -148,7 +150,9 @@ git switch --track origin/feat/channel-setup
 6. 检查服务健康、错误日志，并用专用测试账号验证实际 API 请求、流式返回和消费记录。确认结果后记录发布时间、操作人、目标 SHA、镜像、备份与验收结果。
 7. 失败时先判断旧版与当前数据库是否兼容。兼容时切回保留的旧应用镜像；不兼容时按评审过的修复/恢复方案处理。不要直接覆盖生产数据库，恢复备份可能丢失备份后的客户数据，必须明确影响和处理决定。
 
-**当前部署边界：** [docker-compose.yml](docker-compose.yml) 使用官方 `calciumion/new-api:latest` 镜像，没有配置团队源码构建。因此只 `git pull` 或重启该容器，都不会运行团队源码修改。生产 Compose 的团队镜像引用、域名、配置路径和发布命令需要在确认实际 Ubuntu 环境后落地；本次协作规范不代表服务器已经配置、GitHub 保护已开启或自动部署已经启用。
+**当前部署边界：** 根目录 [docker-compose.yml](docker-compose.yml) 保留本地开发用途及 `calciumion/new-api:latest` 上游标识，AWS 生产使用 [deploy/docker-compose.prod.yml](deploy/docker-compose.prod.yml) 参考模板与独立 `.env`。
+生产 `APP_IMAGE` 仅使用 `ghcr.io/zuimeidamowang/niu-dali-aws:sha-<完整SHA>`。AWS 的域名、路径、数据库、Redis、备份与凭据按服务器实际情况独立核对，不能复用旧服务器的真实配置或数据。
+本规范不代表生产服务器已同步修改、GitHub 包已设为 public 或自动部署已经启用。
 
 发布记录保存在团队 PR / 发布记录或受控运维记录中；只记录备份标识和配置键名，不附密钥或数据库内容。需要自动部署时，再配置独立的生产发布入口、权限和部署互斥，避免多人触发并发上线。
 
@@ -168,7 +172,7 @@ git switch --track origin/feat/channel-setup
 
 ## 8. 落地清单
 
-- [x] 确认团队仓库地址，并配置当前本机 `origin` / `upstream`。
+- [x] 确认 AWS 团队仓库地址，本机只保留 AWS `origin`，解除旧项目远程关联。
 - [x] 完成本机 SSH 认证并获取远程 `main`，核实远程初始历史。
 - [x] 按负责人指示将首次导入代码纳入 `main`。
 - [ ] 配置团队成员权限。

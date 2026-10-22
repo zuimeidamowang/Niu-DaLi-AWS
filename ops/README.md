@@ -1,8 +1,10 @@
-# 生产运维脚本（ops/）
+# AWS 专属生产运维脚本（ops/）
 
-本目录是「GitHub Actions 构建镜像 → 推 GHCR → 生产服务器只拉取」方案的服务器侧脚本。
-镜像由 CI 构建并推送到 GHCR（**public**），生产服务器**零 GitHub 凭据**（无需 `docker login`），
-只做 `docker pull` + 重建 `app` 容器（compose project `newapi-prod`）。
+本目录仅服务于 `zuimeidamowang/Niu-DaLi-AWS` 对应的 AWS 服务器。
+镜像由本仓库 CI 构建，唯一镜像包为 `ghcr.io/zuimeidamowang/niu-dali-aws`。
+旧 `niu-dali` 镜像包、其他服务器的配置、数据库、Redis 和备份均独立管理。
+AWS 上只拉取本项目镜像并重建 `app` 容器；服务器路径和 compose project 需按 AWS 实际环境核对。
+新镜像包须单独设置为 public 并通过匿名拉取验证后，服务器才无需 `docker login`。
 
 > 所有脚本：`#!/usr/bin/env bash` + `set -euo pipefail`；均支持 `--help`；
 > 环境不符时**大声失败并给出可执行的修复指引**，绝不静默继续。
@@ -15,7 +17,7 @@
 | --- | --- | --- |
 | `lib/common.sh` | 被 source | 共用库：日志、环境载入、镜像引用解析、发布锁、compose 封装、环境校验 |
 | `pull-image.sh` | `pull-image.sh <sha\|image-ref> [--record]` | 从 GHCR 拉取镜像（linux/amd64），可选记录到 `pulled.log` |
-| `deploy.sh` | `deploy.sh <sha\|image-ref> [--image-digest <sha256:..>] [--build-local] [--no-backup] [--skip-health]` | **发布核心**：备份 → 拉取 → 原子改 `.env` → 重建 app → 健康检查 → 记录 |
+| `deploy.sh` | `deploy.sh <sha\|image-ref> [--image-digest <sha256:..>] [--no-backup] [--skip-health]` | **发布核心**：备份 → 拉取 → 原子改 `.env` → 重建 app → 健康检查 → 记录；禁止遗留 `--build-local` 入口 |
 | `rollback.sh` | `rollback.sh <prev-sha\|image-ref> [--no-backup]` | 回滚到旧镜像（**不回滚数据库**） |
 | `prune-images.sh` | `prune-images.sh [preview\|cleanup] [--apply] [--keep N]` | 安全清理旧镜像（**仅** `$GHCR_PREFIX`，按显式镜像 ID） |
 | `healthcheck.sh` | `healthcheck.sh [local\|public]` | **只读**健康巡检 |
@@ -24,12 +26,12 @@
 
 ## 2. 环境变量表
 
-所有变量都可用环境变量覆盖，或固化到 `ops.env`（`OPS_ENV_FILE`，默认 `/srv/new-api/ops/ops.env`）。
+服务器路径等变量可用环境变量覆盖，或固化到 `ops.env`（`OPS_ENV_FILE`，默认 `/srv/new-api/ops/ops.env`）；镜像仓库固定为 AWS 专用包。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `OPS_ENV_FILE` | `/srv/new-api/ops/ops.env` | 操作人固化服务器实际路径的配置文件；存在则被 source |
-| `GHCR_PREFIX` | `ghcr.io/zuimeidamowang/niu-dali` | 镜像前缀（GHCR public） |
+| `GHCR_PREFIX` | `ghcr.io/zuimeidamowang/niu-dali-aws` | 固定的 AWS 镜像包；配置为其他包时直接报错 |
 | `COMPOSE_DIR` | `/srv/new-api/production` | compose 项目目录（含 `.env`） |
 | `COMPOSE_FILE` | 自动探测 | 探测顺序见下（生产为 `/srv/new-api/production/compose.yaml`） |
 | `COMPOSE_PROJECT_NAME` | `newapi-prod` | compose project 名（**必须显式绑定**，否则会另起并行容器） |
@@ -40,7 +42,6 @@
 | `LOCK_WAIT_SECONDS` | `600` | 获取发布锁的最长等待秒数 |
 | `RELEASES_DIR` | `/srv/new-api/releases` | 发布台账目录 |
 | `BACKUP_SCRIPT` | `/srv/new-api/ops/backup.sh` | 备份脚本（发布/回滚前置） |
-| `LEGACY_BUILD_SCRIPT` | `/srv/new-api/ops/build-image.sh` | 遗留本机构建入口（仅 `--build-local` 用） |
 | `GC_MAINTENANCE_SCRIPT` | `/srv/new-api/ops/build-cache-maintenance.sh` | 只做 `docker buildx prune` 的维护脚本 |
 | `KEEP_IMAGES` | `3` | `prune-images.sh` 保留最新的 N 个 `sha-*` |
 | `APP_PORT` | `3000` | 应用端口 |
@@ -53,10 +54,10 @@
 `compose.yaml` → `compose.yml` → `docker-compose.yml` → `docker-compose.yaml`。
 生产真实文件为 `/srv/new-api/production/compose.yaml`（`COMPOSE_DIR=/srv/new-api/production` 时第一个即命中）。
 
-**`ops.env` 用法示例**（把服务器实际路径固化，脚本每次运行自动载入）：
+**`ops.env` 用法示例**（路径须按 AWS 服务器实际情况核对，脚本每次运行自动载入）：
 ```sh
 # /srv/new-api/ops/ops.env
-GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali
+GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali-aws
 COMPOSE_DIR=/srv/new-api/production
 COMPOSE_FILE=/srv/new-api/production/compose.yaml
 COMPOSE_PROJECT_NAME=newapi-prod
@@ -65,10 +66,12 @@ RELEASES_DIR=/srv/new-api/releases
 KEEP_IMAGES=3
 ```
 
-从旧仓库迁移时，同时核对服务器 `ops.env` 中已有的 `GHCR_PREFIX`，避免旧值覆盖新默认值。
+AWS 的 `ops.env`、生产 `.env` 和数据库/Redis 凭据应独立配置，不能复制旧服务器的真实配置或业务数据。
+服务器 `ops.env` 若仍设置旧镜像包，脚本会报错并停止，必须先改为上述 AWS 包。
 `ops.env` 会先被载入，其中的直接赋值也会覆盖同名环境变量；未赋值时才使用环境变量或脚本默认值。
-Actions 的 Job Summary 提供完整镜像引用，可直接传给 `deploy.sh`，无需依赖服务器的默认前缀。
-回滚旧仓库版本时也应传入该版本的完整镜像引用，避免把旧 SHA 解析到新仓库。
+Actions 的 Job Summary 提供完整 AWS 镜像引用，可直接传给 `deploy.sh`。
+发布、回滚和拉取只接受 AWS 包下的镜像引用；旧包和其他仓库会被拒绝。镜像清理也仅针对 AWS 包。
+`--build-local` 已禁用，避免调用旧服务器遗留的构建发布脚本。
 
 ---
 
