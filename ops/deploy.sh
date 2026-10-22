@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ops/deploy.sh —— 生产发布入口（服务器只拉取 + 重建 app 容器）。
+# ops/deploy.sh —— AWS 专属发布入口（服务器只拉取 + 重建 app 容器）。
 #
 # ⚠️  本脚本的硬边界（不可协商）：
 #   - 永不触碰 postgres / redis / caddy 容器；
@@ -9,7 +9,7 @@
 #   - 失败时**不做自动回滚**（生产规则：维护失败只告警），仅打印带回滚命令的明确提示。
 #
 # 用法：
-#   deploy.sh <sha|image-ref> [--image-digest <sha256:...>] [--build-local] [--no-backup] [--skip-health]
+#   deploy.sh <sha|image-ref> [--image-digest <sha256:...>] [--no-backup] [--skip-health]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,9 +28,10 @@ usage() {
 用法：deploy.sh <sha|image-ref> [options]
 
 参数：
-  <sha|image-ref>            完整40位sha | 7-39位短sha | ghcr.io/<owner>/niu-dali:sha-<sha>
+  <sha|image-ref>            完整40位sha | 7-39位短sha | ghcr.io/zuimeidamowang/niu-dali-aws:<tag>
+                           也接受该 AWS 仓库的 @sha256:<digest> 引用；其它仓库一律拒绝
   --image-digest <sha256:..> 期望的镜像 digest；与实际拉取结果不一致则中止（防拉错）
-  --build-local              走旧的服务器本机构建路径（exec $LEGACY_BUILD_SCRIPT）
+  --build-local              已禁用；请使用 AWS 流水线构建的专用 GHCR 镜像
   --no-backup                跳过备份（谨慎使用；生产默认必须备份）
   --skip-health              跳过健康检查等待
   -h, --help                 显示本帮助
@@ -140,13 +141,8 @@ run_release() {
     ok "备份完成，标识：$backup_id"
   fi
 
-  local prev_ref prev_short
+  local prev_ref
   prev_ref="$(read_current_app_image)"
-  prev_short=""
-  if [ -n "$prev_ref" ]; then
-    # 内层展开加引号（SC2295）：GHCR_PREFIX 含 . 与 /，避免在 pattern 位置被当作 glob 元字符。
-    prev_short="${prev_ref#"${GHCR_PREFIX}":}"
-  fi
   log "当前 APP_IMAGE（回滚锚点）：${prev_ref:-<空>}"
 
   log "拉取镜像（linux/amd64）：$ref"
@@ -177,15 +173,17 @@ run_release() {
     warn "发布后健康检查未通过。按生产规则**不做自动回滚**。"
     cat >&2 <<EOF
 ------------------------------------------------------------------------
-发布失败，请人工处置。可选回滚命令（需核对数据库 schema 兼容性）：
-  /srv/new-api/ops/rollback.sh ${prev_short}
-或直接：
-  /srv/new-api/ops/deploy.sh ${prev_short}
+发布失败，请人工处置。
 当前 APP_IMAGE 已写入：$ref
 旧 APP_IMAGE（上一版）：${prev_ref:-<空>}
 备份标识：$backup_id
 ------------------------------------------------------------------------
 EOF
+    if [ -n "$prev_ref" ] && (resolve_image_ref "$prev_ref" >/dev/null 2>&1); then
+      printf '核对数据库 schema 兼容性后，可回滚至 AWS 上一版：\n  /srv/new-api/ops/rollback.sh %s\n' "$prev_ref" >&2
+    else
+      warn "旧 APP_IMAGE 不属于有效的 AWS 专用镜像，不能作为回滚目标。请人工选择已验证的 AWS 镜像及数据库兼容方案。"
+    fi
     return 1
   fi
 
@@ -204,19 +202,15 @@ EOF
 
 main() {
   parse_args "$@"
-  require_cmd docker
-  require_cmd git
 
   if [ "$BUILD_LOCAL" -eq 1 ]; then
-    warn "进入遗留的本机构建路径（--build-local）。注意：本机构建会占用服务器 CPU/内存与磁盘。"
-    [ -x "$LEGACY_BUILD_SCRIPT" ] || [ -f "$LEGACY_BUILD_SCRIPT" ] \
-      || die "遗留构建脚本不存在：$LEGACY_BUILD_SCRIPT
-修复：本机构建路径已迁移出仓库；如在服务器上仍需要，请把 build-image.sh 放回该路径，或改用 GHCR 发布的 deploy.sh <sha>。"
-    exec "$LEGACY_BUILD_SCRIPT" "$@"
+    die "AWS 发布已禁用遗留 --build-local 入口，避免旧服务器脚本写入其它镜像仓库。请使用 AWS 流水线构建的 ghcr.io/zuimeidamowang/niu-dali-aws 镜像。"
   fi
 
   local ref sha
   ref="$(resolve_image_ref "$ARG_REF")"
+  require_cmd docker
+  require_cmd git
   # 从 ref 中提取镜像 tag 里的 sha（若有），用于台账；image-ref 直传时可能取不到。
   sha="$(printf '%s' "$ref" | awk -F':sha-' 'NF>1{print $2; exit}')"
   [ -n "$sha" ] || sha="unknown"

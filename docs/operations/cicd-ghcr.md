@@ -1,6 +1,6 @@
 # CI/CD：GitHub Actions 构建镜像 → GHCR → 生产只拉取
 
-本文说明「大力牛」生产环境的镜像交付链路。目标是**把镜像构建从生产服务器搬到 GitHub Actions**，
+本文说明 `zuimeidamowang/Niu-DaLi-AWS` 专属 AWS 环境的镜像交付链路。目标是**把镜像构建从生产服务器搬到 GitHub Actions**，
 生产服务器只做 `docker pull` + 重建 `app` 容器（compose project `newapi-prod`）。
 
 ---
@@ -12,8 +12,18 @@ PR 合并 → `main` 分支 → GitHub Actions 构建 `linux/amd64` 镜像 → �
 
 - CI 产出镜像 tag：`sha-<完整40位小写sha>`（唯一权威，发布/回滚锚点）、`sha-<short12>`（便利别名）、`main`（移动指针，**禁止用于发布记录**）。
 - **不产出 `latest`**，避免「移动指针」造成发布记录不可追溯。
-- 只构建 `linux/amd64`（阿里云 ECS x86_64），默认不做 multi-arch。
+- 默认构建 `linux/amd64`（AWS x86_64），不默认做 multi-arch。
 - CI **不** SSH 生产、**不**执行任何远程部署。
+
+### AWS 隔离约定
+
+- 唯一镜像包：`ghcr.io/zuimeidamowang/niu-dali-aws`；不向旧 `niu-dali` 包写入任何 tag。
+- `publish-image.yml` 只允许在 AWS 仓库运行，checkout 也限定当前仓库。
+- 沿用的 Docker Hub、GitCode 发布工作流全部禁用（job 条件固定为 false），仓库改名也不会重新启用旧发布目标。
+- AWS 的生产 `.env`、数据库、Redis、备份及服务器凭据独立配置；不从其他服务器复制真实配置或业务数据。
+- 运维脚本拒绝旧镜像包、其他镜像仓库及遗留本机构建入口；只清理 AWS 包下的镜像。
+- 改动合并前已启动的旧版构建仍可能写旧包，需要在 GitHub Actions 中取消；不从历史分支重跑旧版发布工作流。
+- 在旧 GHCR 包设置的 Manage Actions access 中撤销 AWS 仓库的访问，可阻止历史工作流继续使用本仓库 GITHUB_TOKEN 写旧包；新提交不能代替这个平台权限操作。
 
 ### 1.1 CI 构建流水线
 
@@ -40,7 +50,7 @@ sequenceDiagram
 sequenceDiagram
     autonumber
     participant Op as 发布操作人 (唯一)
-    participant Srv as 生产服务器 (阿里云 ECS)
+    participant Srv as AWS 生产服务器
     participant Lk as 发布锁 (flock)
     participant GHCR as GHCR (public)
     participant App as app 容器 (newapi-prod-app-1)
@@ -78,9 +88,9 @@ sequenceDiagram
 
 ## 3. GHCR public 说明
 
-- 镜像推送到 **public** 的 GHCR 包。
-- 生产服务器**零 GitHub 凭据**、**无需 `docker login`**，直接 `docker pull ghcr.io/zuimeidamowang/niu-dali:sha-<sha>`。
-- 回滚、换机、灾备重建均可**匿名拉取**，不依赖任何服务器侧密钥。
+- AWS 镜像是独立的新 GHCR 包，首次推送后需单独在包设置中设为 **public**；工作流本身不会更改可见性。
+- 用 `docker pull ghcr.io/zuimeidamowang/niu-dali-aws:sha-<sha>` 验证匿名拉取成功后，生产服务器才无需 `docker login`。
+- 匿名拉取验证通过后，回滚、换机、灾备重建可使用同一 AWS 包，不依赖旧项目的包权限或凭据。
 
 ---
 

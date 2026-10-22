@@ -1,10 +1,10 @@
-# ⚠️  参考模板（REFERENCE TEMPLATE ONLY）—— 不是生产现网文件的权威版本。
+# ⚠️  AWS 参考模板（REFERENCE TEMPLATE ONLY）—— 不是生产现网文件的权威版本。
 #
 # 生产现网的唯一权威编排文件是：/srv/new-api/production/compose.yaml
 #   使用本模板前必须先与它做逐行 diff 核对，**禁止直接覆盖生产文件**。示例：
 #     diff -u /srv/new-api/production/compose.yaml deploy/docker-compose.prod.yml
 #
-# 真实结构（依据项目自带运维技能 niu-dali-prod-log-analysis）：
+# 以下为模板默认结构，须在 AWS 上独立核对，不能视为 AWS 已验证的现网配置：
 #   - compose project：newapi-prod（本文件头 name: 显式声明；ops/*.sh 另以 -p newapi-prod 绑定）
 #   - 服务：app / postgres / redis / caddy（对应的容器名由 compose 生成为 newapi-prod-<svc>-1）
 #   - 容器：newapi-prod-app-1 / newapi-prod-postgres-1 / newapi-prod-redis-1 / newapi-prod-caddy-1
@@ -25,7 +25,8 @@ name: newapi-prod
 
 services:
   app:
-    # 使用预构建镜像；镜像由 GitHub Actions 构建并推送到 GHCR（public）。
+    # 仅使用 AWS 预构建镜像 ghcr.io/zuimeidamowang/niu-dali-aws。
+    # 新包须单独设置 public 并验证匿名拉取，工作流不自动更改可见性。
     # 无 build: 段——生产服务器不再本机构建。
     image: ${APP_IMAGE}
     restart: always

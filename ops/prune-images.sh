@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ops/prune-images.sh —— 安全清理旧的 GHCR 镜像（仅限 $GHCR_PREFIX 前缀，按显式镜像 ID 删除）。
+# ops/prune-images.sh —— 安全清理 AWS 历史镜像（仅限 AWS 专用仓库，按显式镜像 ID 删除）。
 #
 # ⛔ 严禁（本脚本绝不使用，任何人不得在此加入）：
 #     docker system prune
@@ -41,6 +41,8 @@ usage() {
   - 所有容器（含已停止）引用的镜像 ID
   - $GHCR_PREFIX 下按创建时间最新的 N 个 sha-* tag
   - $RELEASES_DIR/rollback-keep.txt 中列出的 ref
+
+仅处理 ghcr.io/zuimeidamowang/niu-dali-aws；GHCR_PREFIX 配置为旧仓库时直接中止。
 USAGE
 }
 

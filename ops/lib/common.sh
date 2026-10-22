@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# ops/lib/common.sh —— 生产发布运维脚本共用库（由 ops/ 下其它脚本 source）。
+# ops/lib/common.sh —— AWS 专属发布运维脚本共用库（由 ops/ 下其它脚本 source）。
 #
 # 约定：
-#   - 所有变量可用环境变量覆盖；也可把服务器实际路径固化到 ops.env（见 load_ops_env）。
+#   - 服务器路径可用环境变量覆盖，也可固化到 ops.env（见 load_ops_env）。
+#   - 镜像仓库固定为 AWS 专用仓库，旧环境配置必须显式迁移，不能切换到其它仓库。
 #   - 本文件**不得**出现任何真实密钥、真实 IP、真实 token。
 set -euo pipefail
 
@@ -24,7 +25,7 @@ require_cmd() {
 # --------------------------- 环境载入 ---------------------------
 # 若存在 ops.env（可由 OPS_ENV_FILE 覆盖），先 source，让操作人固化服务器实际路径。
 # 例如 ops.env 中写：
-#   GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali
+#   GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali-aws
 #   COMPOSE_DIR=/srv/new-api/production
 #   COMPOSE_FILE=/srv/new-api/production/compose.yaml
 #   COMPOSE_PROJECT_NAME=newapi-prod
@@ -40,9 +41,12 @@ load_ops_env() {
 load_ops_env
 
 # --------------------------- 可覆盖默认值 ---------------------------
-GHCR_PREFIX="${GHCR_PREFIX:-ghcr.io/zuimeidamowang/niu-dali}"
-# 生产真实值（依据项目自带运维技能 niu-dali-prod-log-analysis）：
-#   编排文件 /srv/new-api/production/compose.yaml，project newapi-prod，服务 app。
+GHCR_PREFIX="${GHCR_PREFIX-ghcr.io/zuimeidamowang/niu-dali-aws}"
+[ "$GHCR_PREFIX" = 'ghcr.io/zuimeidamowang/niu-dali-aws' ] \
+  || die "AWS 运维脚本只允许镜像仓库 ghcr.io/zuimeidamowang/niu-dali-aws，当前 GHCR_PREFIX='$GHCR_PREFIX'。
+修复：检查环境变量及 ${OPS_ENV_FILE:-/srv/new-api/ops/ops.env}，移除旧 GHCR_PREFIX 或明确设为 ghcr.io/zuimeidamowang/niu-dali-aws；本次操作已中止。"
+# 兼容现有运维目录默认值；AWS 操作人必须独立核对编排文件、project、容器及数据路径，
+# 不能把旧服务器的实际配置直接当作 AWS 的已验证配置。
 COMPOSE_DIR="${COMPOSE_DIR:-/srv/new-api/production}"
 
 # COMPOSE_FILE 自动探测：若未显式指定，则按固定顺序探测常见文件名。
@@ -73,7 +77,6 @@ LOCK_WAIT_SECONDS="${LOCK_WAIT_SECONDS:-600}"
 
 RELEASES_DIR="${RELEASES_DIR:-/srv/new-api/releases}"
 BACKUP_SCRIPT="${BACKUP_SCRIPT:-/srv/new-api/ops/backup.sh}"
-LEGACY_BUILD_SCRIPT="${LEGACY_BUILD_SCRIPT:-/srv/new-api/ops/build-image.sh}"
 GC_MAINTENANCE_SCRIPT="${GC_MAINTENANCE_SCRIPT:-/srv/new-api/ops/build-cache-maintenance.sh}"
 
 KEEP_IMAGES="${KEEP_IMAGES:-3}"
@@ -85,21 +88,22 @@ HEALTH_TIMEOUT_SECONDS="${HEALTH_TIMEOUT_SECONDS:-180}"
 # resolve_image_ref <arg> —— 把用户输入规范化为可拉取的镜像引用，输出到 stdout。
 #   - 纯 40 位小写 hex        → $GHCR_PREFIX:sha-<arg>
 #   - 7~39 位小写 hex         → 打 warn（便利别名），仍映射为 $GHCR_PREFIX:sha-<arg>
-#   - ghcr.io/ 开头           → 原样使用
+#   - AWS 专用仓库的 tag/digest → 校验 Docker 引用格式后原样使用
 #   - 其它                    → die 并给出用法
 resolve_image_ref() {
   local arg="${1:-}"
-  [ -n "$arg" ] || die "resolve_image_ref 需要 <sha|image-ref> 参数。用法：<完整40位sha> | <7-39位短sha> | ghcr.io/<owner>/niu-dali:sha-<sha>"
+  local image_pattern='^ghcr\.io/zuimeidamowang/niu-dali-aws(:[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}(@sha256:[0-9a-f]{64})?|@sha256:[0-9a-f]{64})$'
+  [ -n "$arg" ] || die "AWS 镜像解析需要 <sha|image-ref> 参数。用法：<完整40位sha> | <7-39位短sha> | ghcr.io/zuimeidamowang/niu-dali-aws:<tag> | ghcr.io/zuimeidamowang/niu-dali-aws@sha256:<digest>"
 
   if [[ "$arg" =~ ^[0-9a-f]{40}$ ]]; then
     printf '%s:sha-%s\n' "$GHCR_PREFIX" "$arg"
   elif [[ "$arg" =~ ^[0-9a-f]{7,39}$ ]]; then
     warn "传入的是短 sha '$arg'（便利别名）。建议使用完整 40 位 sha 作为发布与回滚的权威锚点。"
     printf '%s:sha-%s\n' "$GHCR_PREFIX" "$arg"
-  elif [[ "$arg" == ghcr.io/* ]]; then
+  elif [[ "$arg" =~ $image_pattern ]]; then
     printf '%s\n' "$arg"
   else
-    die "无法识别的镜像引用：'$arg'。用法：<完整40位sha> | <7-39位短sha> | ghcr.io/<owner>/niu-dali:sha-<sha>"
+    die "AWS 镜像引用无效或不属于 AWS 专用仓库：'$arg'。只允许提交 SHA 或 ghcr.io/zuimeidamowang/niu-dali-aws 下的完整 tag/digest 引用。"
   fi
 }
 
@@ -204,8 +208,8 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   cat <<'USAGE'
 ops/lib/common.sh —— 共用库，请勿直接运行，应由 ops/ 下脚本 source。
 
-主要变量（均可被环境变量覆盖，或写入 ops.env）：
-  GHCR_PREFIX         镜像前缀       默认 ghcr.io/zuimeidamowang/niu-dali
+主要变量（服务器路径可被环境变量覆盖，或写入 ops.env）：
+  GHCR_PREFIX         AWS 镜像仓库   固定 ghcr.io/zuimeidamowang/niu-dali-aws，旧值会阻止运行
   COMPOSE_DIR         compose 目录   默认 /srv/new-api/production
   COMPOSE_FILE        compose 文件   自动探测
   COMPOSE_PROJECT_NAME compose project 默认 newapi-prod

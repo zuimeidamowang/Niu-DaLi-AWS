@@ -24,7 +24,8 @@ concurrency:
 jobs:
   prepare-release:
     name: Create or update GitCode release
-    if: ${{ vars.GITCODE_REPOSITORY != '' }}
+    # AWS 仓库不向其他项目的 GitCode 仓库同步发布。
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     outputs:
@@ -231,7 +232,7 @@ jobs:
   gitcode-release-assets:
     name: Publish GitCode asset (${{ matrix.file_name }})
     needs: prepare-release
-    if: ${{ inputs.sync_files && needs.prepare-release.result == 'success' && needs.prepare-release.outputs.has_release_assets == 'true' }}
+    if: ${{ false }}
     strategy:
       fail-fast: false
       max-parallel: 4

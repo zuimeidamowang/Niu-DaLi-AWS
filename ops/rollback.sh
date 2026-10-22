@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ops/rollback.sh —— 回滚到指定的旧镜像（服务器只拉取 + 重建 app 容器）。
+# ops/rollback.sh —— 回滚到指定的 AWS 历史镜像（服务器只拉取 + 重建 app 容器）。
 #
 # ⚠️  第一步：本脚本**不回滚数据库**。在执行前必须人工核对旧应用与当前数据库 schema 的兼容性，
 #         否则可能出现数据损坏。schema 兼容性判断由发布操作人负责。
@@ -25,7 +25,8 @@ usage() {
 用法：rollback.sh <prev-sha|image-ref> [--no-backup]
 
 参数：
-  <prev-sha|image-ref>   要回滚到的旧版本：完整40位sha | 7-39位短sha | ghcr.io/<owner>/niu-dali:sha-<sha>
+  <prev-sha|image-ref>   AWS 旧版本：完整40位sha | 7-39位短sha | ghcr.io/zuimeidamowang/niu-dali-aws:<tag>
+                       也接受该 AWS 仓库的 @sha256:<digest> 引用；其它仓库一律拒绝
   --no-backup            跳过备份（谨慎使用；回滚默认也先备份）
   -h, --help             显示本帮助
 
@@ -124,13 +125,8 @@ run_rollback() {
     ok "备份完成，标识：$backup_id"
   fi
 
-  local prev_ref prev_short
+  local prev_ref
   prev_ref="$(read_current_app_image)"
-  prev_short=""
-  if [ -n "$prev_ref" ]; then
-    # 内层展开加引号（SC2295）：GHCR_PREFIX 含 . 与 /，避免在 pattern 位置被当作 glob 元字符。
-    prev_short="${prev_ref#"${GHCR_PREFIX}":}"
-  fi
   log "当前 APP_IMAGE：${prev_ref:-<空>}"
   log "回滚目标：$ref"
 
@@ -151,10 +147,13 @@ run_rollback() {
 回滚失败，请人工处置。当前 APP_IMAGE 已写入：$ref
 上一个 ref：${prev_ref:-<空>}
 备份标识：$backup_id
-如需切回上一版：
-  /srv/new-api/ops/deploy.sh ${prev_short}
 ------------------------------------------------------------------------
 EOF
+    if [ -n "$prev_ref" ] && (resolve_image_ref "$prev_ref" >/dev/null 2>&1); then
+      printf '核对数据库 schema 兼容性后，可切回 AWS 上一版：\n  /srv/new-api/ops/deploy.sh %s\n' "$prev_ref" >&2
+    else
+      warn "旧 APP_IMAGE 不属于有效的 AWS 专用镜像，不能作为切回目标。请人工选择已验证的 AWS 镜像及数据库兼容方案。"
+    fi
     return 1
   fi
 
@@ -171,13 +170,13 @@ EOF
 
 main() {
   parse_args "$@"
-  require_cmd docker
-  require_cmd git
 
   warn "回滚前请务必核对：旧应用（${ARG_REF}）与当前数据库 schema 的兼容性。本脚本**不回滚数据库**。"
 
   local ref sha
   ref="$(resolve_image_ref "$ARG_REF")"
+  require_cmd docker
+  require_cmd git
   sha="$(printf '%s' "$ref" | awk -F':sha-' 'NF>1{print $2; exit}')"
   [ -n "$sha" ] || sha="unknown"
 
