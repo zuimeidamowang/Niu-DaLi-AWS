@@ -19,6 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { useTranslation } from 'react-i18next'
 
 import { SectionPageLayout } from '@/components/layout'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { UsersDeleteDialog } from './components/users-delete-dialog'
 import { UsersMutateDrawer } from './components/users-mutate-drawer'
@@ -53,8 +54,9 @@ function UsersContent() {
 }
 
 export function Users() {
+  const user = useAuthStore((s) => s.auth.user)
   return (
-    <UsersProvider>
+    <UsersProvider key={`${user?.id}:${user?.role}:${user?.group}`}>
       <UsersContent />
     </UsersProvider>
   )

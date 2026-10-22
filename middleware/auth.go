@@ -71,7 +71,7 @@ func authHelper(c *gin.Context, minRole int) {
 	// 的写接口都会自动留痕（无需在路由上单独挂审计中间件，避免漏挂）。
 	// handler 内手动埋点者会设置 ContextKeyAuditLogged，finishAdminAudit 据此跳过。
 	var auditWriter *auditResponseWriter
-	if minRole >= common.RoleAdminUser {
+	if minRole >= common.RoleUserManager {
 		auditWriter = beginAdminAudit(c)
 	}
 
@@ -106,6 +106,14 @@ func UserAuth() func(c *gin.Context) {
 func AdminAuth() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		authHelper(c, common.RoleAdminUser)
+	}
+}
+
+// UserManagementAuth admits secondary managers only to routes that enforce
+// creator ownership. Global administration continues to require AdminAuth.
+func UserManagementAuth() func(c *gin.Context) {
+	return func(c *gin.Context) {
+		authHelper(c, common.RoleUserManager)
 	}
 }
 

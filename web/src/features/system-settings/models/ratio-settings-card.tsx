@@ -17,7 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { zodResolver } from '@hookform/resolvers/zod'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
@@ -36,13 +36,16 @@ import {
   type ModelPricingConfig,
 } from '@/features/model-pricing/api'
 import { pricingOptions } from '@/features/model-pricing/pricing'
+import { getUserGroupNames } from '@/features/users/api'
 import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 
 import { SettingsPageTitleStatusPortal } from '../components/settings-page-context'
 import { SettingsSection } from '../components/settings-section'
 import { useUpdateOption } from '../hooks/use-update-option'
 import { positiveIntegerSchema } from '../utils/numeric-field'
 import { GroupRatioForm } from './group-ratio-form'
+import { migrateLegacyUserGroupVisibility } from './group-visibility-migration'
 import { ModelRatioForm } from './model-ratio-form'
 import { ToolPriceSettings } from './tool-price-settings'
 import { UpstreamRatioSync } from './upstream-ratio-sync'
@@ -114,6 +117,31 @@ function createJsonStringField(
   })
 }
 
+function createTopupGroupRatioField(t: Translate) {
+  return createJsonStringField(t).superRefine((value, ctx) => {
+    let ratios: unknown
+    try {
+      ratios = JSON.parse(value)
+    } catch {
+      return
+    }
+    if (
+      !ratios ||
+      typeof ratios !== 'object' ||
+      Array.isArray(ratios) ||
+      Object.values(ratios).some(
+        (ratio) =>
+          typeof ratio !== 'number' || !Number.isFinite(ratio) || ratio < 0
+      )
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: t('Top-up ratio must be zero or greater'),
+      })
+    }
+  })
+}
+
 const createModelSchema = (t: Translate) =>
   z.object({
     ModelPrice: createJsonStringField(t),
@@ -133,7 +161,8 @@ const createModelSchema = (t: Translate) =>
 const createGroupSchema = (t: Translate) =>
   z.object({
     GroupRatio: createJsonStringField(t),
-    TopupGroupRatio: createJsonStringField(t),
+    TopupGroupRatio: createTopupGroupRatioField(t),
+    UserGroups: createJsonStringField(t),
     UserUsableGroups: createJsonStringField(t),
     GroupGroupRatio: createJsonStringField(t),
     AutoGroups: createJsonStringField(t, {
@@ -149,6 +178,10 @@ const createGroupSchema = (t: Translate) =>
 
 type ModelFormValues = z.infer<ReturnType<typeof createModelSchema>>
 type GroupFormValues = z.infer<ReturnType<typeof createGroupSchema>>
+type UserGroupNamesResponse = {
+  data?: string[]
+  legacy_compatibility?: boolean
+}
 type RatioTabId =
   | 'models'
   | 'unset-models'
@@ -177,6 +210,11 @@ export function RatioSettingsCard({
 
   const pricingQuery = useModelPricing()
   const savePricing = useSaveModelPricing()
+  const userGroupNamesQuery = useQuery<UserGroupNamesResponse>({
+    queryKey: ['admin-user-group-names'],
+    queryFn: async () =>
+      requireServerSuccess(await getUserGroupNames()) as UserGroupNamesResponse,
+  })
   const [pricingBaseline, setPricingBaseline] =
     useState<ModelPricingConfig | null>(null)
   useEffect(() => {
@@ -244,6 +282,7 @@ export function RatioSettingsCard({
   const groupNormalizedDefaults = useRef({
     GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
     TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
+    UserGroups: normalizeJsonString(groupDefaults.UserGroups),
     UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
     GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
     AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
@@ -284,6 +323,7 @@ export function RatioSettingsCard({
       ...groupDefaults,
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
+      UserGroups: formatJsonForTextarea(groupDefaults.UserGroups),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
       AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
@@ -334,6 +374,7 @@ export function RatioSettingsCard({
     groupNormalizedDefaults.current = {
       GroupRatio: normalizeJsonString(groupDefaults.GroupRatio),
       TopupGroupRatio: normalizeJsonString(groupDefaults.TopupGroupRatio),
+      UserGroups: normalizeJsonString(groupDefaults.UserGroups),
       UserUsableGroups: normalizeJsonString(groupDefaults.UserUsableGroups),
       GroupGroupRatio: normalizeJsonString(groupDefaults.GroupGroupRatio),
       AutoGroups: normalizeJsonString(groupDefaults.AutoGroups),
@@ -348,6 +389,7 @@ export function RatioSettingsCard({
       ...groupDefaults,
       GroupRatio: formatJsonForTextarea(groupDefaults.GroupRatio),
       TopupGroupRatio: formatJsonForTextarea(groupDefaults.TopupGroupRatio),
+      UserGroups: formatJsonForTextarea(groupDefaults.UserGroups),
       UserUsableGroups: formatJsonForTextarea(groupDefaults.UserUsableGroups),
       GroupGroupRatio: formatJsonForTextarea(groupDefaults.GroupGroupRatio),
       AutoGroups: formatJsonForTextarea(groupDefaults.AutoGroups),
@@ -412,6 +454,7 @@ export function RatioSettingsCard({
       const normalized = {
         GroupRatio: normalizeJsonString(values.GroupRatio),
         TopupGroupRatio: normalizeJsonString(values.TopupGroupRatio),
+        UserGroups: normalizeJsonString(values.UserGroups),
         UserUsableGroups: normalizeJsonString(values.UserUsableGroups),
         GroupGroupRatio: normalizeJsonString(values.GroupGroupRatio),
         AutoGroups: normalizeJsonString(values.AutoGroups),
@@ -428,6 +471,36 @@ export function RatioSettingsCard({
           'group_ratio_setting.group_special_usable_group',
       }
 
+      const userGroupsChanged =
+        normalized.UserGroups !== groupNormalizedDefaults.current.UserGroups
+      const legacyCompatibility =
+        userGroupNamesQuery.data?.legacy_compatibility === true
+      const legacyUserGroupNames = legacyCompatibility
+        ? (userGroupNamesQuery.data?.data ?? [])
+        : []
+      const migratedVisibility = userGroupsChanged
+        ? migrateLegacyUserGroupVisibility({
+            legacyCompatibility,
+            legacyUserGroupNames,
+            userGroups: normalized.UserGroups,
+            groupRatio: normalized.GroupRatio,
+            userUsableGroups: normalized.UserUsableGroups,
+            groupSpecialUsableGroup: normalized.GroupSpecialUsableGroup,
+          })
+        : null
+
+      if (migratedVisibility) {
+        normalized.GroupSpecialUsableGroup = migratedVisibility
+        groupForm.setValue('GroupSpecialUsableGroup', migratedVisibility, {
+          shouldDirty: false,
+          shouldValidate: false,
+        })
+        await updateOption.mutateAsync({
+          key: apiKeyMap.GroupSpecialUsableGroup,
+          value: migratedVisibility,
+        })
+      }
+
       const updates = (
         Object.keys(normalized) as Array<keyof typeof normalized>
       ).filter(
@@ -435,13 +508,27 @@ export function RatioSettingsCard({
       )
 
       for (const key of updates) {
+        if (
+          key === 'UserGroups' ||
+          (migratedVisibility && key === 'GroupSpecialUsableGroup')
+        ) {
+          continue
+        }
         const apiKey = apiKeyMap[key] || key
         await updateOption.mutateAsync({ key: apiKey, value: normalized[key] })
       }
 
+      if (userGroupsChanged) {
+        await updateOption.mutateAsync({
+          key: 'UserGroups',
+          value: normalized.UserGroups,
+        })
+        await userGroupNamesQuery.refetch()
+      }
+
       groupNormalizedDefaults.current = normalized
     },
-    [updateOption]
+    [groupForm, updateOption, userGroupNamesQuery]
   )
 
   const handleResetRatios = useCallback(() => {
@@ -509,9 +596,23 @@ export function RatioSettingsCard({
       )
     }
     if (tab === 'groups') {
+      if (userGroupNamesQuery.isPending) return <LoadingState />
+      if (userGroupNamesQuery.isError) {
+        return (
+          <ErrorState
+            description={userGroupNamesQuery.error.message}
+            onRetry={() => void userGroupNamesQuery.refetch()}
+          />
+        )
+      }
       return (
         <GroupRatioForm
           form={groupForm}
+          legacyUserGroupNames={
+            userGroupNamesQuery.data?.legacy_compatibility
+              ? (userGroupNamesQuery.data.data ?? [])
+              : []
+          }
           onSave={saveGroupRatios}
           isSaving={updateOption.isPending}
         />

@@ -410,6 +410,21 @@ it.each([
     ['Enabled', '0 / 3'],
   ],
   ['user.create', { username: 'alice', role: 10 }, ['admin', 'alice']],
+  [
+    'user.create',
+    { username: 'manager', role: 5 },
+    ['User Manager', 'manager'],
+  ],
+  [
+    'user.create',
+    { username: 'third-level', role: 6 },
+    ['Third-level User', 'third-level'],
+  ],
+  [
+    'user.manage',
+    { username: 'manager', action: 'promote_manager' },
+    ['Assign User Manager', 'manager'],
+  ],
 ])(
   'formats known parameters for %s without losing zero or false',
   async (action, params, values) => {

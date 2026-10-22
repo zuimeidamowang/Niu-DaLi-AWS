@@ -71,68 +71,40 @@ func newTokenAutoGroupsAuthenticatedContext(t *testing.T, method string, target 
 	return ctx, recorder
 }
 
-func TestAddTokenEmptyAutoGroupsInheritGlobalAuto(t *testing.T) {
+func TestAddTokenSupportsAutoGroupInheritanceAndCustomOrder(t *testing.T) {
 	tests := []struct {
-		name         string
-		includeField bool
-		value        any
+		name               string
+		includeGroups      bool
+		expectedAutoGroups string
 	}{
-		{name: "omitted"},
-		{name: "null", includeField: true, value: nil},
-		{name: "empty array", includeField: true, value: []string{}},
+		{name: "inherits global order"},
+		{name: "persists custom order", includeGroups: true, expectedAutoGroups: `["vip","default"]`},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
 			user := setupTokenAutoGroupsControllerTest(t)
-			request := baseAutoTokenRequest("create-" + test.name)
-			if test.includeField {
-				request["auto_groups"] = test.value
+			request := baseAutoTokenRequest("create-auto")
+			if test.includeGroups {
+				request["auto_groups"] = []string{"vip", "default"}
 			}
 
 			ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
 			AddToken(ctx)
 
-			response := decodeAPIResponse(t, recorder)
-			require.True(t, response.Success, response.Message)
+			require.True(t, decodeAPIResponse(t, recorder).Success)
 			var token model.Token
 			require.NoError(t, model.DB.Where("name = ?", request["name"]).First(&token).Error)
-			assert.Empty(t, token.AutoGroups)
+			assert.Equal(t, "auto", token.Group)
 			assert.True(t, token.CrossGroupRetry)
-			payload, err := common.Marshal(buildMaskedTokenResponse(&token))
-			require.NoError(t, err)
-			var responseData map[string]any
-			require.NoError(t, common.Unmarshal(payload, &responseData))
-			assert.Nil(t, responseData["auto_groups"])
+			if test.expectedAutoGroups == "" {
+				assert.Empty(t, token.AutoGroups)
+			} else {
+				assert.JSONEq(t, test.expectedAutoGroups, token.AutoGroups)
+			}
 		})
 	}
-}
-
-func TestAddTokenPersistsOrderedAutoGroupsSnapshot(t *testing.T) {
-	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
-	user := setupTokenAutoGroupsControllerTest(t)
-	request := baseAutoTokenRequest("ordered-snapshot")
-	request["auto_groups"] = []string{"vip", "default"}
-
-	ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
-	AddToken(ctx)
-	require.True(t, decodeAPIResponse(t, recorder).Success)
-
-	var token model.Token
-	require.NoError(t, model.DB.Where("name = ?", "ordered-snapshot").First(&token).Error)
-	assert.JSONEq(t, `["vip","default"]`, token.AutoGroups)
-
-	getCtx, getRecorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodGet, "/api/token/"+stringInt(token.Id), nil, user.Id)
-	getCtx.Params = append(getCtx.Params, gin.Param{Key: "id", Value: stringInt(token.Id)})
-	GetToken(getCtx)
-	getResponse := decodeAPIResponse(t, getRecorder)
-	require.True(t, getResponse.Success)
-	var data struct {
-		AutoGroups []string `json:"auto_groups"`
-	}
-	require.NoError(t, common.Unmarshal(getResponse.Data, &data))
-	assert.Equal(t, []string{"vip", "default"}, data.AutoGroups)
 }
 
 func TestUpdateTokenAutoGroupsTriStateAndNonAutoCleanup(t *testing.T) {
@@ -184,7 +156,36 @@ func TestUpdateTokenAutoGroupsTriStateAndNonAutoCleanup(t *testing.T) {
 	}
 }
 
-func TestAddTokenRejectsInvalidAutoGroups(t *testing.T) {
+func TestUpdateTokenCanSwitchToAutoGroup(t *testing.T) {
+	configureTokenAutoGroupsTest(t, "5", `["default","vip"]`)
+	user := setupTokenAutoGroupsControllerTest(t)
+	token := seedToken(t, model.DB, user.Id, "channel-key", "channel-key-value")
+	token.Group = "default"
+	require.NoError(t, model.DB.Save(token).Error)
+
+	request := map[string]any{
+		"id":                token.Id,
+		"name":              token.Name,
+		"expired_time":      -1,
+		"remain_quota":      0,
+		"unlimited_quota":   true,
+		"status":            common.TokenStatusEnabled,
+		"group":             "auto",
+		"cross_group_retry": true,
+		"auto_groups":       []string{"vip"},
+	}
+	ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPut, "/api/token/", request, user.Id)
+	UpdateToken(ctx)
+
+	require.True(t, decodeAPIResponse(t, recorder).Success)
+	var updated model.Token
+	require.NoError(t, model.DB.First(&updated, token.Id).Error)
+	assert.Equal(t, "auto", updated.Group)
+	assert.True(t, updated.CrossGroupRetry)
+	assert.JSONEq(t, `["vip"]`, updated.AutoGroups)
+}
+
+func TestUpdateTokenRejectsInvalidAutoGroups(t *testing.T) {
 	tests := []struct {
 		name     string
 		maxCount string
@@ -200,19 +201,108 @@ func TestAddTokenRejectsInvalidAutoGroups(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			configureTokenAutoGroupsTest(t, test.maxCount, `["default","vip"]`)
 			user := setupTokenAutoGroupsControllerTest(t)
-			request := baseAutoTokenRequest("invalid-" + test.name)
+			token := seedToken(t, model.DB, user.Id, "legacy-auto", "legacy-auto-key")
+			token.Group = "auto"
+			token.CrossGroupRetry = true
+			require.NoError(t, token.SetAutoGroups([]string{"vip"}))
+			require.NoError(t, model.DB.Save(token).Error)
+
+			request := baseAutoTokenRequest("legacy-auto")
+			request["id"] = token.Id
+			request["status"] = common.TokenStatusEnabled
 			request["auto_groups"] = test.groups
+
+			ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPut, "/api/token/", request, user.Id)
+			UpdateToken(ctx)
+
+			response := decodeAPIResponse(t, recorder)
+			assert.False(t, response.Success)
+			var unchanged model.Token
+			require.NoError(t, model.DB.First(&unchanged, token.Id).Error)
+			assert.JSONEq(t, `["vip"]`, unchanged.AutoGroups)
+		})
+	}
+}
+
+func TestAddTokenAllowsVisibleChannelGroupAndDefaultsEmptyGroup(t *testing.T) {
+	tests := []struct {
+		name  string
+		group string
+	}{
+		{name: "explicit default", group: "default"},
+		{name: "empty group defaults to default"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			configureTokenAutoGroupsTest(t, "5", `[]`)
+			user := setupTokenAutoGroupsControllerTest(t)
+			request := map[string]any{
+				"name":            "visible-channel-group",
+				"expired_time":    -1,
+				"remain_quota":    0,
+				"unlimited_quota": true,
+				"group":           test.group,
+			}
 
 			ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
 			AddToken(ctx)
 
-			response := decodeAPIResponse(t, recorder)
-			assert.False(t, response.Success)
-			var count int64
-			require.NoError(t, model.DB.Model(&model.Token{}).Count(&count).Error)
-			assert.Zero(t, count)
+			require.True(t, decodeAPIResponse(t, recorder).Success)
+			var token model.Token
+			require.NoError(t, model.DB.Where("name = ?", request["name"]).First(&token).Error)
+			assert.Equal(t, "default", token.Group)
+			assert.False(t, token.CrossGroupRetry)
 		})
 	}
+}
+
+func TestAddTokenRejectsChannelGroupsNotVisibleToUserGroup(t *testing.T) {
+	t.Run("globally hidden channel group", func(t *testing.T) {
+		configureTokenAutoGroupsTest(t, "5", `[]`)
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+		user := setupTokenAutoGroupsControllerTest(t)
+		request := map[string]any{
+			"name":            "hidden-channel-group",
+			"expired_time":    -1,
+			"remain_quota":    0,
+			"unlimited_quota": true,
+			"group":           "vip",
+		}
+
+		ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+		AddToken(ctx)
+
+		assert.False(t, decodeAPIResponse(t, recorder).Success)
+		var count int64
+		require.NoError(t, model.DB.Model(&model.Token{}).Where("user_id = ?", user.Id).Count(&count).Error)
+		assert.Zero(t, count)
+	})
+
+	t.Run("explicitly hidden default channel group", func(t *testing.T) {
+		configureTokenAutoGroupsTest(t, "5", `[]`)
+		specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+		originalSpecialGroups := specialGroups.ReadAll()
+		t.Cleanup(func() {
+			specialGroups.Clear()
+			specialGroups.AddAll(originalSpecialGroups)
+		})
+		specialGroups.Clear()
+		specialGroups.Set("default", map[string]string{"-:default": ""})
+		user := setupTokenAutoGroupsControllerTest(t)
+		request := map[string]any{
+			"name":            "hidden-default-group",
+			"expired_time":    -1,
+			"remain_quota":    0,
+			"unlimited_quota": true,
+			"group":           "default",
+		}
+
+		ctx, recorder := newTokenAutoGroupsAuthenticatedContext(t, http.MethodPost, "/api/token/", request, user.Id)
+		AddToken(ctx)
+
+		assert.False(t, decodeAPIResponse(t, recorder).Success)
+	})
 }
 
 func TestGetTokenAutoGroupsReturnsFullFilteredGlobalOrderAndLimit(t *testing.T) {

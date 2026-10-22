@@ -2,9 +2,11 @@ package model
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -177,4 +179,29 @@ func TestRetiredThemeOptionIsPersistedButNotPublished(t *testing.T) {
 	assert.Equal(t, "default", requireOptionValue(t, db, retiredThemeOptionKey))
 	_, published := common.OptionMap[retiredThemeOptionKey]
 	assert.False(t, published)
+}
+
+func TestUpdateOptionRejectsInvalidGroupOptionsBeforePersistence(t *testing.T) {
+	db := useFrontendOptionMigrationDB(t)
+	options := []Option{
+		{Key: "TopupGroupRatio", Value: `{"vip":2}`},
+		{Key: "UserGroups", Value: `{"default":"Default","vip":"VIP"}`},
+	}
+	require.NoError(t, db.Create(&options).Error)
+
+	topupBefore := common.TopupGroupRatio2JSONString()
+	userGroupsBefore := setting.GetUserGroupsCopy()
+	userGroupsConfiguredBefore := setting.UserGroupsConfigured()
+
+	require.Error(t, UpdateOption("TopupGroupRatio", `{"vip":-1}`))
+	require.Error(t, UpdateOption("UserGroups", `{"auto":"Reserved"}`))
+	longGroups, err := common.Marshal(map[string]string{strings.Repeat("a", setting.MaxUserGroupNameLength+1): "Too long"})
+	require.NoError(t, err)
+	require.Error(t, UpdateOption("UserGroups", string(longGroups)))
+
+	assert.Equal(t, options[0].Value, requireOptionValue(t, db, "TopupGroupRatio"))
+	assert.Equal(t, options[1].Value, requireOptionValue(t, db, "UserGroups"))
+	assert.JSONEq(t, topupBefore, common.TopupGroupRatio2JSONString())
+	assert.Equal(t, userGroupsBefore, setting.GetUserGroupsCopy())
+	assert.Equal(t, userGroupsConfiguredBefore, setting.UserGroupsConfigured())
 }

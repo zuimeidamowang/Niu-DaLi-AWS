@@ -27,6 +27,7 @@ function PricingFixture() {
   const [settings, setSettings] = useState<Record<string, string>>({
     GroupRatio: '{"default":1}',
     TopupGroupRatio: '{}',
+    UserGroups: '{"default":"Standard"}',
     UserUsableGroups: '{}',
   })
   return (
@@ -37,6 +38,8 @@ function PricingFixture() {
         defaultUseAutoGroupField={null}
         groupRatio={settings.GroupRatio}
         topupGroupRatio={settings.TopupGroupRatio}
+        userGroups={settings.UserGroups}
+        legacyUserGroupNames={[]}
         userUsableGroups={settings.UserUsableGroups}
         groupGroupRatio='{}'
         autoGroups='[]'
@@ -51,39 +54,33 @@ function PricingFixture() {
   )
 }
 
-test.each([
-  ['GroupRatio', 0],
-  ['TopupGroupRatio', 1],
-] as const)(
-  '%s preserves typed decimals and accepts them as valid numeric ratios',
-  async (key, index) => {
-    const user = userEvent.setup()
-    render(<PricingFixture />)
-    const row = screen.getByDisplayValue('default').closest('tr')
-    assert(row)
-    const input = within(row).getAllByRole('spinbutton')[
-      index
-    ] as HTMLInputElement
-    fireEvent.change(input, { target: { value: '0.0' } })
-    expect(input.value).toBe('0.0')
-    await user.clear(input)
-    await user.type(input, '0.04')
-    expect(input).toHaveValue(0.04)
-    await user.tab()
-    expect(input.checkValidity()).toBe(true)
-    const saved = JSON.parse(
-      screen.getByRole('status', { name: 'Saved ratios' }).textContent ?? '{}'
-    )
-    expect(JSON.parse(saved[key])).toEqual({ default: 0.04 })
-    await user.clear(input)
-    await user.type(input, '0.0001')
-    expect(input).toHaveValue(0.0001)
-    expect(input.checkValidity()).toBe(true)
-    await user.clear(input)
-    await user.type(input, '0.00001')
-    expect(input.validity.stepMismatch).toBe(true)
-    await user.clear(input)
-    await user.type(input, '-0.04')
-    expect(input.validity.rangeUnderflow).toBe(true)
-  }
-)
+test('channel group ratios preserve typed decimals and accept valid numeric values', async () => {
+  const user = userEvent.setup()
+  render(<PricingFixture />)
+  const row = screen.getByRole('textbox', { name: 'Group name' }).closest('tr')
+  assert(row)
+  const input = within(row).getByRole('spinbutton', {
+    name: 'Ratio',
+  }) as HTMLInputElement
+  fireEvent.change(input, { target: { value: '0.0' } })
+  expect(input.value).toBe('0.0')
+  await user.clear(input)
+  await user.type(input, '0.04')
+  expect(input).toHaveValue(0.04)
+  await user.tab()
+  expect(input.checkValidity()).toBe(true)
+  const saved = JSON.parse(
+    screen.getByRole('status', { name: 'Saved ratios' }).textContent ?? '{}'
+  )
+  expect(JSON.parse(saved.GroupRatio)).toEqual({ default: 0.04 })
+  await user.clear(input)
+  await user.type(input, '0.0001')
+  expect(input).toHaveValue(0.0001)
+  expect(input.checkValidity()).toBe(true)
+  await user.clear(input)
+  await user.type(input, '0.00001')
+  expect(input.validity.stepMismatch).toBe(true)
+  await user.clear(input)
+  await user.type(input, '-0.04')
+  expect(input.validity.rangeUnderflow).toBe(true)
+})

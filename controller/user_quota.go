@@ -2,6 +2,7 @@ package controller
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/QuantumNous/new-api/common"
@@ -44,7 +45,13 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 		markAuditLogged(c)
 	}()
 
-	adjustment, err := model.AdjustUserQuota(req.Id, c.GetInt("role"), req.Mode, req.Value)
+	var adjustment *model.UserQuotaAdjustment
+	var err error
+	if common.IsDelegatedUserManager(c.GetInt("role")) {
+		adjustment, err = model.TransferManagedUserQuota(req.Id, c.GetInt("id"), c.GetInt("role"), req.Mode, req.Value)
+	} else {
+		adjustment, err = model.AdjustUserQuota(req.Id, c.GetInt("role"), req.Mode, req.Value)
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, model.ErrInvalidUserQuotaAdjustment):
@@ -57,12 +64,21 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 		case errors.Is(err, model.ErrUserQuotaPermission):
 			params["failure_reason"] = "permission_denied"
 			common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		case errors.Is(err, gorm.ErrRecordNotFound) && common.IsDelegatedUserManager(c.GetInt("role")):
+			params["failure_reason"] = "permission_denied"
+			common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			params["failure_reason"] = "target_not_found"
 			common.ApiErrorI18n(c, i18n.MsgUserNotExists)
 		case errors.Is(err, model.ErrWalletQuotaLimitExceeded):
 			params["failure_reason"] = "quota_limit_exceeded"
 			common.ApiError(c, err)
+		case errors.Is(err, model.ErrQuotaTransferInsufficient):
+			params["failure_reason"] = "insufficient_quota"
+			common.ApiErrorI18n(c, i18n.MsgQuotaInsufficient)
+		case errors.Is(err, model.ErrQuotaTransferUnavailable):
+			params["failure_reason"] = "transfer_unavailable"
+			common.ApiErrorI18n(c, i18n.MsgQuotaTransferUnavailable)
 		default:
 			params["failure_reason"] = "database_error"
 			common.ApiError(c, err)
@@ -73,6 +89,11 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 	params["target_username"] = adjustment.Username
 	params["from"] = adjustment.Before
 	params["to"] = adjustment.After
+	if adjustment.OperatorID != 0 {
+		params["manager_user_id"] = adjustment.OperatorID
+		params["manager_from"] = adjustment.OperatorBefore
+		params["manager_to"] = adjustment.OperatorAfter
+	}
 	if req.Mode != "override" {
 		params["quota"] = req.Value
 	}
@@ -80,5 +101,9 @@ func manageUserQuota(c *gin.Context, req ManageRequest) {
 	operation := model.AuditOperation{Action: action, Params: params}
 	model.RecordLogWithAdminInfo(adjustment.UserID, model.LogTypeTopup,
 		auditContentEN(action, params), auditOperatorInfo(c), &operation, c)
+	if adjustment.OperatorID != 0 && adjustment.OperatorBefore != adjustment.OperatorAfter {
+		model.RecordLogWithAdminInfo(adjustment.OperatorID, model.LogTypeTopup,
+			fmt.Sprintf("Managed user quota transfer: user %d, balance %d -> %d", adjustment.UserID, adjustment.OperatorBefore, adjustment.OperatorAfter), auditOperatorInfo(c), &operation, c)
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }

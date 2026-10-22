@@ -34,6 +34,7 @@ const (
 	VerificationScopePasswordSet         = "account.password.set"
 	VerificationScopePasswordChange      = "account.password.change"
 	VerificationScopeAccountDelete       = "account.delete"
+	VerificationScopeUserPasswordReset   = "user.password.reset"
 )
 
 var (
@@ -66,6 +67,10 @@ type AccountUnbindingContext struct {
 	ProviderID int `json:"provider_id"`
 }
 
+type UserPasswordResetContext struct {
+	TargetUserID int `json:"target_user_id"`
+}
+
 // VerificationBinding contains no original operation parameters. It can safely
 // travel through a signed proof or a server-owned interactive verification flow.
 type VerificationBinding struct {
@@ -85,6 +90,12 @@ func BindVerificationOperation(operation VerificationOperation) (VerificationBin
 	case VerificationScopeChannelKeyRead:
 		var context ChannelKeyReadContext
 		if len(fields) != 1 || common.Unmarshal(fields["channel_id"], &context.ChannelID) != nil || context.ChannelID <= 0 {
+			return VerificationBinding{}, ErrVerificationContextInvalid
+		}
+		normalized = context
+	case VerificationScopeUserPasswordReset:
+		var context UserPasswordResetContext
+		if len(fields) != 1 || common.Unmarshal(fields["target_user_id"], &context.TargetUserID) != nil || context.TargetUserID <= 0 {
 			return VerificationBinding{}, ErrVerificationContextInvalid
 		}
 		normalized = context
@@ -186,7 +197,11 @@ func securityVerificationPolicy(scope string, state model.UserVerificationState)
 	case VerificationScopePasskeyRegister, VerificationScopeTwoFASetup,
 		VerificationScopeAccessTokenGenerate, VerificationScopeAccessTokenRevoke,
 		VerificationScopeAccountBind, VerificationScopeAccountUnbind,
-		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete:
+		VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete,
+		VerificationScopeUserPasswordReset:
+		if scope == VerificationScopeUserPasswordReset && !common.IsDelegatedUserManager(state.Role) && state.Role < common.RoleAdminUser {
+			return nil, ErrVerificationForbidden
+		}
 		if scope == VerificationScopeAccountDelete && state.Role == common.RoleRootUser {
 			return nil, ErrVerificationForbidden
 		}
@@ -242,7 +257,7 @@ func GetVerificationRequirements(identity AuthIdentity, scope string) (*Verifica
 	for i := range methods {
 		if methods[i].Method == VerificationMethodPassword && !common.PasswordLoginEnabled {
 			switch scope {
-			case VerificationScopeAccountBind, VerificationScopeAccountUnbind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete:
+			case VerificationScopeAccountBind, VerificationScopeAccountUnbind, VerificationScopePasswordSet, VerificationScopePasswordChange, VerificationScopeAccountDelete, VerificationScopeUserPasswordReset:
 				methods[i].Available, methods[i].Reason = false, "Password authentication is disabled."
 			}
 		}

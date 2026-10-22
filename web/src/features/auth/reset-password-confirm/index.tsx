@@ -38,6 +38,7 @@ import { AuthLayout } from '../auth-layout'
 export type ResetPasswordSearchParams = {
   email?: string
   token?: string
+  user_id?: string
 }
 
 type ResetPasswordConfirmProps = ResetPasswordSearchParams
@@ -45,6 +46,7 @@ type ResetPasswordConfirmProps = ResetPasswordSearchParams
 export function ResetPasswordConfirm({
   email,
   token,
+  user_id,
 }: ResetPasswordConfirmProps) {
   const { t } = useTranslation()
   const navigate = useNavigate()
@@ -68,7 +70,15 @@ export function ResetPasswordConfirm({
     startCountdown()
     setLoading(true)
     try {
-      const res = await api.post('/api/user/reset', { email, token }, {
+      const parsedUserId = user_id ? Number(user_id) : 0
+      const request = {
+        email,
+        token,
+        ...(Number.isSafeInteger(parsedUserId) && parsedUserId > 0
+          ? { user_id: parsedUserId }
+          : {}),
+      }
+      const res = await api.post('/api/user/reset', request, {
         skipBusinessError: true,
       } as Record<string, unknown>)
 

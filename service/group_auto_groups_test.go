@@ -70,3 +70,25 @@ func TestGetRequestAutoGroupsDoesNotFallBackAfterPermissionChange(t *testing.T) 
 
 	assert.Empty(t, groups)
 }
+
+func TestLegacyUserGroupCompatibilityAndExplicitChannelVisibilityDenial(t *testing.T) {
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	originalSpecialGroups := specialGroups.ReadAll()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		specialGroups.Clear()
+		specialGroups.AddAll(originalSpecialGroups)
+	})
+
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":1,"svip":1,"channel-only":1}`))
+	specialGroups.Clear()
+	specialGroups.Set("default", map[string]string{"-:default": ""})
+
+	assert.True(t, GroupInUserUsableGroups("svip", "svip"))
+	assert.False(t, IsUserSelectableGroup("default", "default"))
+	assert.Contains(t, GetUserGroupNames(), "channel-only")
+}

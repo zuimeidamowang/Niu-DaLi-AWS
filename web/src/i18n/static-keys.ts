@@ -238,6 +238,8 @@ export const STATIC_I18N_KEYS = [
 
   // Roles
   'Super Admin',
+  'User Manager',
+  'User promoted to user manager successfully',
   'Admin',
   'User',
   'Guest',
@@ -819,4 +821,11 @@ export const STATIC_I18N_KEYS = [
   'Vendor name and icon must not exceed 128 characters.',
   'Shown',
   'Not shown',
+  'User managers without a parent',
+  'Users without a parent',
+  'No sub-users',
+  'Expand sub-users of {{username}}',
+  'Collapse sub-users of {{username}}',
+  'Group is inherited from the third-level user.',
+  'Password reset email sent',
 ] as const

@@ -75,8 +75,7 @@ describe('external canvas top navigation', () => {
   it('opens the canvas in a new tab so the current page is left untouched', () => {
     const { result } = topNavFor('https://canvas.example.test/')
     expect(
-      result.current.find((link) => link.title === 'Infinite canvas')
-        ?.external
+      result.current.find((link) => link.title === 'Infinite canvas')?.external
     ).toBe(true)
   })
 

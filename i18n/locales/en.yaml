@@ -291,3 +291,7 @@ custom_oauth.name_empty: "Provider name cannot be empty"
 custom_oauth.has_bindings: "Cannot delete provider with existing user bindings"
 custom_oauth.binding_not_found: "OAuth binding not found"
 custom_oauth.provider_id_field_invalid: "Could not extract user ID from provider response"
+
+user.managed_delete_balance: "Reclaim the user's remaining quota before deletion"
+user.managed_user_has_children: "Remove this user's managed users before deleting or demoting them"
+user.quota_transfer_unavailable: "Quota transfers are temporarily unavailable; retry after accounting has synchronized"

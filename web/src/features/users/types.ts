@@ -28,7 +28,7 @@ import type { AdminPermissionMatrix } from '@/lib/admin-permissions'
 export const userStatusSchema = z.number()
 export type UserStatus = z.infer<typeof userStatusSchema>
 
-/** User role: 1 = common user, 10 = admin, 100 = root */
+/** User role: 1 = common user, 5 = user manager, 6 = third-level user, 10 = admin, 100 = root */
 export const userRoleSchema = z.number()
 export type UserRole = z.infer<typeof userRoleSchema>
 
@@ -51,6 +51,12 @@ export const userSchema = z.object({
   aff_quota: z.number().optional(),
   aff_history_quota: z.number().optional(),
   inviter_id: z.number().optional(),
+  creator_id: z.number().optional(),
+  group_inherited: z.boolean().optional(),
+  hierarchy_auto_expand: z.boolean().optional(),
+  children_loading: z.boolean().optional(),
+  children_error: z.boolean().optional(),
+  children_loaded: z.boolean().optional(),
   linux_do_id: z.string().optional(),
   status: userStatusSchema,
   role: userRoleSchema,
@@ -91,6 +97,7 @@ export type UserSortOrder = 'asc' | 'desc'
 export interface GetUsersParams {
   p?: number
   page_size?: number
+  hierarchy?: boolean
   sort_by?: UserSortBy
   sort_order?: UserSortOrder
 }
@@ -113,8 +120,23 @@ export interface SearchUsersParams {
   status?: string
   p?: number
   page_size?: number
+  hierarchy?: boolean
   sort_by?: UserSortBy
   sort_order?: UserSortOrder
+}
+
+export interface GetManagedUserChildrenParams extends GetUsersParams {
+  keyword?: string
+  group?: string
+  role?: string
+  status?: string
+}
+
+export type UserTreeNode = User & {
+  sub_users?: UserTreeNode[]
+  children_loading?: boolean
+  children_error?: boolean
+  children_loaded?: boolean
 }
 
 export interface UserFormData {
@@ -130,6 +152,8 @@ export interface UserFormData {
 
 export type ManageUserAction =
   | 'promote'
+  | 'promote_manager'
+  | 'promote_third_level'
   | 'demote'
   | 'enable'
   | 'disable'

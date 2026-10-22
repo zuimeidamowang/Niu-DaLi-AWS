@@ -4,7 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -273,9 +277,61 @@ func SendPasswordResetEmail(c *gin.Context) {
 	})
 }
 
+func AdminSendUserPasswordResetEmail(c *gin.Context) {
+	userID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || userID <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	scope := userManagementScope(c)
+	user, err := model.GetUserByIdInManagementScope(userID, scope, false)
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	if !scope.CanManage(user) {
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+		return
+	}
+	payload, err := common.Marshal(service.UserPasswordResetContext{TargetUserID: user.Id})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeUserPasswordReset, Context: payload}) == nil {
+		return
+	}
+	email := model.NormalizeEmail(user.Email)
+	if err := common.Validate.Var(email, "required,email"); err != nil {
+		common.ApiErrorMsg(c, "用户未绑定有效邮箱，无法发送密码重置链接")
+		return
+	}
+	code := common.GenerateVerificationCode(0)
+	verificationKey := managedPasswordResetVerificationKey(user.Id, email)
+	common.RegisterVerificationCodeWithKey(verificationKey, code, common.ManagedPasswordResetPurpose)
+	link := fmt.Sprintf("%s/user/reset?email=%s&token=%s&user_id=%d", strings.TrimRight(system_setting.ServerAddress, "/"), url.QueryEscape(email), url.QueryEscape(code), user.Id)
+	escapedLink := html.EscapeString(link)
+	subject := fmt.Sprintf("%s密码重置", common.SystemName)
+	content := fmt.Sprintf("<p>您好，你正在进行%s密码重置。</p>"+
+		"<p>点击 <a href='%s'>此处</a> 进行密码重置。</p>"+
+		"<p>如果链接无法点击，请尝试点击下面的链接或将其复制到浏览器中打开：<br> %s </p>"+
+		"<p>重置链接 %d 分钟内有效，如果不是本人操作，请忽略。</p>", common.SystemName, escapedLink, escapedLink, common.VerificationValidMinutes)
+	if err := common.SendEmail(subject, email, content); err != nil {
+		common.DeleteVerificationCodeIfMatch(verificationKey, code, common.ManagedPasswordResetPurpose)
+		common.ApiError(c, err)
+		return
+	}
+	recordManageAuditFor(c, user.Id, "user.password_reset_email", map[string]any{
+		"username": user.Username,
+		"id":       user.Id,
+	})
+	common.ApiSuccess(c, nil)
+}
+
 type PasswordResetRequest struct {
-	Email string `json:"email"`
-	Token string `json:"token"`
+	Email  string `json:"email"`
+	Token  string `json:"token"`
+	UserID int    `json:"user_id,omitempty"`
 }
 
 func ResetPassword(c *gin.Context) {
@@ -286,16 +342,26 @@ func ResetPassword(c *gin.Context) {
 		return
 	}
 	req.Email = model.NormalizeEmail(req.Email)
-	if req.Email == "" || req.Token == "" {
+	if req.Email == "" || req.Token == "" || req.UserID < 0 {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
-	if !common.VerifyCodeWithKey(req.Email, req.Token, common.PasswordResetPurpose) {
+	verificationKey := req.Email
+	purpose := common.PasswordResetPurpose
+	if req.UserID > 0 {
+		verificationKey = managedPasswordResetVerificationKey(req.UserID, req.Email)
+		purpose = common.ManagedPasswordResetPurpose
+	}
+	if !common.ConsumeVerificationCodeWithKey(verificationKey, req.Token, purpose) {
 		common.ApiErrorI18n(c, i18n.MsgUserPasswordResetLinkInvalid)
 		return
 	}
 	password := common.GenerateVerificationCode(12)
-	err = model.ResetUserPasswordByEmail(req.Email, password)
+	if req.UserID > 0 {
+		err = model.ResetUserPasswordByIDAndEmail(req.UserID, req.Email, password)
+	} else {
+		err = model.ResetUserPasswordByEmail(req.Email, password)
+	}
 	if err != nil {
 		if errors.Is(err, model.ErrEmailNotFound) || errors.Is(err, model.ErrEmailAmbiguous) {
 			common.ApiErrorI18n(c, i18n.MsgUserPasswordResetLinkInvalid)
@@ -304,11 +370,14 @@ func ResetPassword(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	common.DeleteKey(req.Email, common.PasswordResetPurpose)
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"message": "",
 		"data":    password,
 	})
 	return
+}
+
+func managedPasswordResetVerificationKey(userID int, email string) string {
+	return strconv.Itoa(userID) + ":" + email
 }

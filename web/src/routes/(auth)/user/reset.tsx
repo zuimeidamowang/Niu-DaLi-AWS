@@ -32,5 +32,11 @@ function UserResetPassword() {
     from: '/(auth)/user/reset',
   }) as ResetPasswordSearchParams
 
-  return <ResetPasswordConfirm email={search?.email} token={search?.token} />
+  return (
+    <ResetPasswordConfirm
+      email={search?.email}
+      token={search?.token}
+      user_id={search?.user_id}
+    />
+  )
 }

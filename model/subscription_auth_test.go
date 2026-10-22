@@ -148,3 +148,63 @@ func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *tes
 	require.NoError(t, DB.Where("user_id = ?", user.Id).First(&subscription).Error)
 	assert.Equal(t, "active", subscription.Status)
 }
+
+func TestExpiredSubscriptionsForHardDeletedUsersDoNotBlockExpiration(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	activeUser := User{
+		Username:    "subscription-expiration-active-user",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&activeUser).Error)
+	for _, subscription := range []*UserSubscription{
+		{
+			UserId:         activeUser.Id,
+			Status:         "active",
+			EndTime:        now - 1,
+			UpgradeGroup:   "pro",
+			PrevUserGroup:  "default",
+			DowngradeGroup: "default",
+		},
+		{
+			UserId:         activeUser.Id + 1,
+			Status:         "active",
+			EndTime:        now - 2,
+			UpgradeGroup:   "pro",
+			PrevUserGroup:  "default",
+			DowngradeGroup: "default",
+		},
+	} {
+		require.NoError(t, DB.Create(subscription).Error)
+	}
+
+	expiredCount, err := ExpireDueSubscriptions(100)
+
+	require.NoError(t, err)
+	assert.Equal(t, 2, expiredCount)
+	var expiredSubscriptions []UserSubscription
+	require.NoError(t, DB.Order("user_id asc").Find(&expiredSubscriptions).Error)
+	require.Len(t, expiredSubscriptions, 2)
+	assert.Equal(t, "expired", expiredSubscriptions[0].Status)
+	assert.Equal(t, "expired", expiredSubscriptions[1].Status)
+}
+
+func TestDowngradeSubscriptionForHardDeletedUserIsSkipped(t *testing.T) {
+	truncateTables(t)
+	subscription := &UserSubscription{
+		UserId:         999999,
+		Status:         "expired",
+		UpgradeGroup:   "pro",
+		PrevUserGroup:  "default",
+		DowngradeGroup: "default",
+	}
+
+	target, err := downgradeUserGroupForSubscriptionTx(DB, subscription, GetDBTimestamp())
+
+	require.NoError(t, err)
+	assert.Empty(t, target)
+}

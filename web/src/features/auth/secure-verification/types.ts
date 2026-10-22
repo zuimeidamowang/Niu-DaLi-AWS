@@ -38,9 +38,11 @@ export type SecurityProofScope =
   | 'account.password.set'
   | 'account.password.change'
   | 'account.delete'
+  | 'user.password.reset'
 
 export type VerificationOperation =
   | { scope: 'channel.key.read'; context: { channel_id: number } }
+  | { scope: 'user.password.reset'; context: { target_user_id: number } }
   | {
       scope: 'account.binding.bind'
       context: { provider: string; email?: string; code?: string }
@@ -49,7 +51,10 @@ export type VerificationOperation =
   | {
       scope: Exclude<
         SecurityProofScope,
-        'channel.key.read' | 'account.binding.bind' | 'account.binding.unbind'
+        | 'channel.key.read'
+        | 'account.binding.bind'
+        | 'account.binding.unbind'
+        | 'user.password.reset'
       >
       context?: Record<string, never>
     }

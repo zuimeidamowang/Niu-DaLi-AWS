@@ -19,6 +19,8 @@ For commercial licensing, please contact support@quantumnous.com
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, test } from 'vitest'
 
+import type { ApiKey } from '../../types'
+
 const { createInstance } = await import('i18next')
 const { I18nextProvider, initReactI18next } = await import('react-i18next')
 const { QueryClient, QueryClientProvider } =
@@ -37,6 +39,7 @@ type ApiMethod = (url: string, data?: unknown) => Promise<{ data: unknown }>
 type MockableApi = {
   get: ApiMethod
   post: ApiMethod
+  put: ApiMethod
 }
 type RenderedDrawer = {
   queryClient: InstanceType<typeof QueryClient>
@@ -45,9 +48,32 @@ type RenderedDrawer = {
 const apiClient = api as unknown as MockableApi
 const originalGet = apiClient.get
 const originalPost = apiClient.post
+const originalPut = apiClient.put
 let renderedDrawer: RenderedDrawer | null = null
 
-function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
+const legacyAutoApiKey: ApiKey = {
+  id: 71,
+  name: 'legacy auto key',
+  key: 'sk-legacy',
+  status: 1,
+  remain_quota: 0,
+  used_quota: 0,
+  unlimited_quota: true,
+  expired_time: -1,
+  created_time: 1,
+  accessed_time: 1,
+  group: 'auto',
+  auto_groups: null,
+  cross_group_retry: true,
+  model_limits_enabled: false,
+  model_limits: '',
+  allow_ips: '',
+}
+
+function installApiFixtures(
+  createdPayloads: Array<Record<string, unknown>>,
+  updatedPayloads: Array<Record<string, unknown>> = []
+) {
   apiClient.get = async (url) => {
     switch (url) {
       case '/api/status':
@@ -72,6 +98,8 @@ function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
             data: { groups: ['vip', 'default'], max_count: 3 },
           },
         }
+      case '/api/token/71':
+        return { data: { success: true, data: legacyAutoApiKey } }
       default:
         throw new Error(`Unexpected GET ${url}`)
     }
@@ -82,9 +110,15 @@ function installApiFixtures(createdPayloads: Array<Record<string, unknown>>) {
     createdPayloads.push(data as Record<string, unknown>)
     return { data: { success: true, data: {} } }
   }
+  apiClient.put = async (url, data) => {
+    expect(url).toBe('/api/token/')
+    expect(data && typeof data === 'object').toBeTruthy()
+    updatedPayloads.push(data as Record<string, unknown>)
+    return { data: { success: true, data: {} } }
+  }
 }
 
-async function renderCreateDrawer(): Promise<void> {
+async function renderDrawer(currentRow?: ApiKey): Promise<void> {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -94,6 +128,13 @@ async function renderCreateDrawer(): Promise<void> {
     { default_use_auto_group: true },
     { updatedAt: freshAt }
   )
+  if (currentRow) {
+    queryClient.setQueryData(
+      ['api-key', currentRow.id],
+      { success: true, data: currentRow },
+      { updatedAt: freshAt }
+    )
+  }
   queryClient.setQueryData(
     ['user-models'],
     { success: true, data: [] },
@@ -125,7 +166,11 @@ async function renderCreateDrawer(): Promise<void> {
     <QueryClientProvider client={queryClient}>
       <I18nextProvider i18n={i18n}>
         <ApiKeysProvider>
-          <ApiKeysMutateDrawer open onOpenChange={() => undefined} />
+          <ApiKeysMutateDrawer
+            open
+            onOpenChange={() => undefined}
+            currentRow={currentRow}
+          />
         </ApiKeysProvider>
       </I18nextProvider>
     </QueryClientProvider>
@@ -196,6 +241,7 @@ function selectComboboxOption(
 afterEach(() => {
   apiClient.get = originalGet
   apiClient.post = originalPost
+  apiClient.put = originalPut
   localStorage.clear()
   if (renderedDrawer) {
     renderedDrawer.queryClient.clear()
@@ -203,25 +249,26 @@ afterEach(() => {
   }
 })
 
-describe('API keys mutate drawer Auto group integration', () => {
-  test('inherits the root Auto order and sends an empty override for every batch-created key', async () => {
+describe('API keys mutate drawer channel group selection', () => {
+  test('honors the configured Auto default and keeps Auto selectable', async () => {
     const createdPayloads: Array<Record<string, unknown>> = []
     installApiFixtures(createdPayloads)
-    await renderCreateDrawer()
+    await renderDrawer()
 
     const groupTrigger = getControlByLabel('Group')
-    expect(groupTrigger.textContent?.includes('auto')).toBe(true)
+    expect(groupTrigger.textContent?.toLowerCase().includes('auto')).toBe(true)
+    fireEvent.click(groupTrigger)
+    const options = [
+      ...document.querySelectorAll<HTMLElement>('[data-slot="command-item"]'),
+    ]
     expect(
-      document.body.textContent?.includes(
-        'Using the complete global Auto order (2 groups)'
+      options.some((option) =>
+        option.textContent?.includes('Automatic routing')
       )
     ).toBe(true)
-    expect(
-      [
-        ...document.querySelectorAll('[data-slot="global-auto-order-name"]'),
-      ].map((item) => item.textContent)
-    ).toEqual(['vip', 'default'])
-    expect(findButton('Restore global Auto', true).disabled).toBe(true)
+    expect(options.some((option) => option.textContent?.includes('vip'))).toBe(
+      true
+    )
 
     changeInput(getControlByLabel('Name'), 'batch')
     changeInput(getControlByLabel('Quantity'), '2')
@@ -237,44 +284,38 @@ describe('API keys mutate drawer Auto group integration', () => {
     }
   })
 
-  test('preserves an unsaved custom order and mode after Auto to ordinary to Auto changes', async () => {
-    const createdPayloads: Array<Record<string, unknown>> = []
-    installApiFixtures(createdPayloads)
-    await renderCreateDrawer()
-
-    const autoOrderControl = getControlByLabel('Auto group order')
-    const addGroupTrigger = autoOrderControl.querySelector<HTMLButtonElement>(
-      'button[role="combobox"]'
-    )
-    if (!addGroupTrigger) {
-      throw new Error('Expected Auto group order combobox')
-    }
-    selectComboboxOption(addGroupTrigger, 'Priority access')
-
-    expect(
-      document.querySelector('button[aria-label="Remove vip"]')
-    ).toBeTruthy()
-    expect(document.body.textContent?.includes('1 / 3 groups selected')).toBe(
-      true
-    )
-    expect(findButton('Restore global Auto', true).disabled).toBe(false)
+  test('preserves the group on an existing Auto key when saving another field', async () => {
+    const updatedPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures([], updatedPayloads)
+    await renderDrawer(legacyAutoApiKey)
 
     const groupTrigger = getControlByLabel('Group')
-    selectComboboxOption(groupTrigger, 'Standard access')
-    expect(document.querySelector('button[aria-label="Remove vip"]')).toBe(null)
-    selectComboboxOption(groupTrigger, 'Automatic routing')
-
+    expect(groupTrigger.textContent?.includes('auto')).toBe(true)
+    fireEvent.click(groupTrigger)
     expect(
-      document.querySelector('button[aria-label="Remove vip"]')
-    ).toBeTruthy()
-    expect(document.body.textContent?.includes('1 / 3 groups selected')).toBe(
-      true
-    )
-    expect(findButton('Restore global Auto', true).disabled).toBe(false)
+      [...document.querySelectorAll('[data-slot="command-item"]')].some(
+        (option) => option.textContent?.includes('Automatic routing')
+      )
+    ).toBe(true)
 
-    changeInput(getControlByLabel('Name'), 'custom')
+    changeInput(getControlByLabel('Name'), 'legacy auto key renamed')
     fireEvent.click(findButton('Save changes', true))
-    await waitFor(() => expect(createdPayloads).toHaveLength(1))
-    expect(createdPayloads[0]?.auto_groups).toEqual(['vip'])
+    await waitFor(() => expect(updatedPayloads).toHaveLength(1))
+    expect(updatedPayloads[0]?.group).toBe('auto')
+    expect(updatedPayloads[0]?.name).toBe('legacy auto key renamed')
+  })
+
+  test('lets an existing Auto key switch to a visible channel group', async () => {
+    const updatedPayloads: Array<Record<string, unknown>> = []
+    installApiFixtures([], updatedPayloads)
+    await renderDrawer(legacyAutoApiKey)
+
+    selectComboboxOption(getControlByLabel('Group'), 'Standard access')
+    changeInput(getControlByLabel('Name'), 'legacy auto key reassigned')
+    fireEvent.click(findButton('Save changes', true))
+
+    await waitFor(() => expect(updatedPayloads).toHaveLength(1))
+    expect(updatedPayloads[0]?.group).toBe('default')
+    expect(updatedPayloads[0]?.name).toBe('legacy auto key reassigned')
   })
 })

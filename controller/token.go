@@ -127,6 +127,19 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 	return true
 }
 
+func validateTokenChannelGroup(c *gin.Context, group string) bool {
+	userGroup, err := getTokenRequestUserGroup(c)
+	if err != nil {
+		common.ApiError(c, err)
+		return false
+	}
+	if service.IsUserSelectableGroup(userGroup, group) {
+		return true
+	}
+	common.ApiErrorMsg(c, "所选渠道分组不可用")
+	return false
+}
+
 func GetAllTokens(c *gin.Context) {
 	userId := c.GetInt("id")
 	pageInfo := common.GetPageQuery(c)
@@ -315,11 +328,17 @@ func AddToken(c *gin.Context) {
 		})
 		return
 	}
+	if token.Group == "" {
+		token.Group = "default"
+	}
 	if token.Group == "auto" {
 		if !setTokenAutoGroups(c, &token, request.AutoGroups.Groups) {
 			return
 		}
 	} else {
+		if !validateTokenChannelGroup(c, token.Group) {
+			return
+		}
 		token.CrossGroupRetry = false
 		_ = token.SetAutoGroups(nil)
 	}
@@ -437,8 +456,16 @@ func UpdateToken(c *gin.Context) {
 		cleanToken.ModelLimitsEnabled = token.ModelLimitsEnabled
 		cleanToken.ModelLimits = token.ModelLimits
 		cleanToken.AllowIps = token.AllowIps
+		if token.Group == "" {
+			token.Group = "default"
+		}
 		cleanToken.Group = token.Group
 		cleanToken.CrossGroupRetry = token.CrossGroupRetry
+		if token.Group != "auto" && token.Group != previous.Group {
+			if !validateTokenChannelGroup(c, token.Group) {
+				return
+			}
+		}
 		if token.Group != "auto" {
 			cleanToken.CrossGroupRetry = false
 			_ = cleanToken.SetAutoGroups(nil)

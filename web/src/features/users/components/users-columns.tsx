@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import type { ColumnDef } from '@tanstack/react-table'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -26,14 +27,17 @@ import { GroupBadge } from '@/components/group-badge'
 import { LongText } from '@/components/long-text'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
+import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { toIntlLocale } from '@/i18n/languages'
 import { getCurrencyDisplay } from '@/lib/currency'
-import { formatQuota } from '@/lib/format'
+import { formatNumber, formatQuota } from '@/lib/format'
+import { useAuthStore } from '@/stores/auth-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
@@ -42,12 +46,17 @@ import {
   USER_ROLES,
   isUserDeleted,
 } from '../constants'
+import { isDelegatedUserManager } from '../lib/user-actions'
 import type { User } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 import { UserQuotaCell } from './user-quota-cell'
 
 export function useUsersColumns(): ColumnDef<User>[] {
-  const { t } = useTranslation()
+  const { t, i18n } = useTranslation()
+  const isDelegatedManager = useAuthStore((state) =>
+    isDelegatedUserManager(state.auth.user?.role)
+  )
+  const locale = toIntlLocale(i18n.resolvedLanguage || i18n.language)
   const currencyConfig = useSystemConfigStore((state) => state.config.currency)
   const { meta: currency } = getCurrencyDisplay()
   const quotaUnit = currency.kind === 'tokens' ? t('Tokens') : currency.symbol
@@ -99,40 +108,95 @@ export function useUsersColumns(): ColumnDef<User>[] {
           const username = row.getValue('username') as string
           const displayName = row.original.display_name
           const remark = row.original.remark
+          let hierarchyControl = null
+
+          if (row.getCanExpand()) {
+            hierarchyControl = (
+              <Button
+                type='button'
+                variant='ghost'
+                size='icon'
+                className='size-6 shrink-0'
+                aria-expanded={row.getIsExpanded()}
+                aria-label={t(
+                  row.getIsExpanded()
+                    ? 'Collapse sub-users of {{username}}'
+                    : 'Expand sub-users of {{username}}',
+                  { username }
+                )}
+                onClick={row.getToggleExpandedHandler()}
+              >
+                {row.getIsExpanded() ? (
+                  <ChevronDown aria-hidden='true' />
+                ) : (
+                  <ChevronRight aria-hidden='true' />
+                )}
+              </Button>
+            )
+          } else if (row.depth > 0) {
+            hierarchyControl = (
+              <span className='size-6 shrink-0' aria-hidden='true' />
+            )
+          }
 
           return (
-            <div className='flex min-w-[160px] flex-col gap-1'>
-              <div className='flex items-center gap-2'>
-                <LongText className='max-w-[140px] text-sm font-normal'>
-                  {username}
-                </LongText>
-                {remark && (
-                  <Tooltip>
-                    <TooltipTrigger
-                      render={
-                        <StatusBadge
-                          variant='success'
-                          copyable={false}
-                          className='font-normal'
-                        />
-                      }
-                    >
-                      <LongText className='max-w-[80px]'>{remark}</LongText>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p className='text-xs'>{remark}</p>
-                    </TooltipContent>
-                  </Tooltip>
-                )}
-              </div>
-              {displayName && displayName !== username && (
-                <div
-                  data-table-text='secondary'
-                  className='text-muted-foreground max-w-[180px] text-xs font-normal'
-                >
-                  <LongText>{displayName}</LongText>
+            <div className='flex min-w-[160px] items-start gap-1'>
+              {Array.from({ length: row.depth }, (_, index) => (
+                <span key={index} className='w-3 shrink-0' aria-hidden='true' />
+              ))}
+              {hierarchyControl}
+              <div className='flex min-w-0 flex-col gap-1'>
+                <div className='flex items-center gap-2'>
+                  <LongText className='max-w-[140px] text-sm font-normal'>
+                    {username}
+                  </LongText>
+                  {remark && (
+                    <Tooltip>
+                      <TooltipTrigger
+                        render={
+                          <StatusBadge
+                            variant='success'
+                            copyable={false}
+                            className='font-normal'
+                          />
+                        }
+                      >
+                        <LongText className='max-w-[80px]'>{remark}</LongText>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p className='text-xs'>{remark}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  )}
                 </div>
-              )}
+                {displayName && displayName !== username && (
+                  <div
+                    data-table-text='secondary'
+                    className='text-muted-foreground max-w-[180px] text-xs font-normal'
+                  >
+                    <LongText>{displayName}</LongText>
+                  </div>
+                )}
+                {row.getIsExpanded() && row.original.children_loading && (
+                  <div className='text-muted-foreground text-xs'>
+                    {t('Loading...')}
+                  </div>
+                )}
+                {row.getIsExpanded() && row.original.children_error && (
+                  <div className='text-destructive text-xs'>
+                    {t('Failed to load users')}
+                  </div>
+                )}
+                {row.getIsExpanded() &&
+                  row.original.children_loaded &&
+                  !row.original.children_loading &&
+                  !row.original.children_error &&
+                  row.subRows.length === 0 && (
+                    <div className='text-muted-foreground text-xs'>
+                      {t('No sub-users')}
+                    </div>
+                  )}
+              </div>
             </div>
           )
         },
@@ -215,6 +279,19 @@ export function useUsersColumns(): ColumnDef<User>[] {
         size: 140,
         meta: { mobileOrder: 30 },
       },
+      ...(isDelegatedManager
+        ? [
+            {
+              accessorKey: 'request_count',
+              header: t('Requests'),
+              cell: ({ row }) =>
+                formatNumber(row.original.request_count, locale),
+              enableSorting: false,
+              size: 120,
+              meta: { mobileOrder: 50 },
+            } satisfies ColumnDef<User>,
+          ]
+        : []),
       {
         accessorKey: 'role',
         header: t('Role'),
@@ -298,6 +375,6 @@ export function useUsersColumns(): ColumnDef<User>[] {
     ],
     // formatQuota reads the currency configuration from the store.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [t, quotaUnit, currencyConfig]
+    [t, quotaUnit, currencyConfig, isDelegatedManager, locale]
   )
 }

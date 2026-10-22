@@ -1,7 +1,8 @@
 package common
 
 import (
-	"encoding/json"
+	"fmt"
+	"maps"
 	"sync"
 )
 
@@ -15,18 +16,41 @@ var topupGroupRatioMutex sync.RWMutex
 func TopupGroupRatio2JSONString() string {
 	topupGroupRatioMutex.RLock()
 	defer topupGroupRatioMutex.RUnlock()
-	jsonBytes, err := json.Marshal(topupGroupRatio)
+	jsonBytes, err := Marshal(topupGroupRatio)
 	if err != nil {
 		SysError("error marshalling topup group ratio: " + err.Error())
 	}
 	return string(jsonBytes)
 }
 
+func parseTopupGroupRatios(jsonStr string) (map[string]float64, error) {
+	var ratios map[string]float64
+	if err := UnmarshalJsonStr(jsonStr, &ratios); err != nil {
+		return nil, err
+	}
+	for group, ratio := range ratios {
+		if ratio < 0 {
+			return nil, fmt.Errorf("top-up ratio for group %q cannot be negative", group)
+		}
+	}
+	return ratios, nil
+}
+
+func ValidateTopupGroupRatioJSON(jsonStr string) error {
+	_, err := parseTopupGroupRatios(jsonStr)
+	return err
+}
+
 func UpdateTopupGroupRatioByJSONString(jsonStr string) error {
+	ratios, err := parseTopupGroupRatios(jsonStr)
+	if err != nil {
+		return err
+	}
+
 	topupGroupRatioMutex.Lock()
-	defer topupGroupRatioMutex.Unlock()
-	topupGroupRatio = make(map[string]float64)
-	return json.Unmarshal([]byte(jsonStr), &topupGroupRatio)
+	topupGroupRatio = ratios
+	topupGroupRatioMutex.Unlock()
+	return nil
 }
 
 func GetTopupGroupRatio(name string) float64 {
@@ -38,4 +62,13 @@ func GetTopupGroupRatio(name string) float64 {
 		return 1
 	}
 	return ratio
+}
+
+func GetTopupGroupRatioCopy() map[string]float64 {
+	topupGroupRatioMutex.RLock()
+	defer topupGroupRatioMutex.RUnlock()
+
+	copyGroupRatio := make(map[string]float64, len(topupGroupRatio))
+	maps.Copy(copyGroupRatio, topupGroupRatio)
+	return copyGroupRatio
 }

@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -158,6 +159,27 @@ func TestSecurityAccountDeletionAcceptsEitherFactorAndRevokesSessions(t *testing
 			var audit model.AuditLog
 			require.NoError(t, model.LOG_DB.Where("action = ?", "user.account_delete").Last(&audit).Error)
 			assert.True(t, audit.Success)
+		})
+	}
+}
+
+func TestSecurityAccountDeletionRejectsManagersWithManagedChildren(t *testing.T) {
+	for _, role := range []int{common.RoleUserManager, common.RoleThirdLevelUser} {
+		t.Run(fmt.Sprintf("role_%d", role), func(t *testing.T) {
+			user, identity := setupSecurityEnrollmentTest(t)
+			require.NoError(t, model.DB.Model(user).Update("role", role).Error)
+			child := &model.User{Username: fmt.Sprintf("account-delete-child-%d", role), Role: common.RoleCommonUser, CreatorID: user.Id, Status: common.UserStatusEnabled, Group: "default", AuthVersion: 1, AffCode: fmt.Sprintf("account-delete-child-%d", role)}
+			require.NoError(t, model.DB.Create(child).Error)
+			proof := issueSecurityEnrollmentProof(t, identity, service.VerificationOperation{Scope: service.VerificationScopeAccountDelete}, service.VerificationMethodPassword)
+
+			response := securityEnrollmentRequest("DELETE", "/api/user/self", "", proof, identity, DeleteSelf)
+			assert.Equal(t, http.StatusConflict, response.Code, response.Body.String())
+			assert.Contains(t, response.Body.String(), "MANAGED_USER_HAS_CHILDREN")
+			stored, err := model.GetUserById(user.Id, false)
+			require.NoError(t, err)
+			assert.Equal(t, role, stored.Role)
+			_, _, err = service.ValidateLoginSession(identity)
+			assert.NoError(t, err, "a blocked account deletion must preserve the session")
 		})
 	}
 }

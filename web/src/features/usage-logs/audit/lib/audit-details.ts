@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import type { TFunction } from 'i18next'
 
 import { loginMethodLabel } from '@/features/security/components/login-session-utils'
-import { ROLE } from '@/lib/roles'
+import { ROLE, getRoleLabelKey } from '@/lib/roles'
 
 import { renderAuditContent } from '../../lib/format'
 import { buildQuotaAuditOperation } from '../../lib/quota-audit-operation'
@@ -31,6 +31,12 @@ const AUDIT_ROLE_NAMES: Record<number, string> = {
   [ROLE.USER]: 'user',
   [ROLE.ADMIN]: 'admin',
   [ROLE.SUPER_ADMIN]: 'root',
+}
+
+function auditRoleName(role: number, t: TFunction): string {
+  return role === ROLE.USER_MANAGER || role === ROLE.THIRD_LEVEL_USER
+    ? t(getRoleLabelKey(role))
+    : AUDIT_ROLE_NAMES[role]
 }
 
 const TOKEN_AUDIT_OPERATIONS: Record<
@@ -361,9 +367,12 @@ export function buildAuditDetails(entry: AuditLog, t: TFunction) {
   }
   if (
     typeof summaryParams.role === 'number' &&
-    [0, 1, 10, 100].includes(summaryParams.role)
+    [0, 1, 5, 6, 10, 100].includes(summaryParams.role)
   ) {
-    summaryParams.role = AUDIT_ROLE_NAMES[summaryParams.role]
+    summaryParams.role = auditRoleName(summaryParams.role, t)
+  }
+  if (action === 'user.manage' && summaryParams.action === 'promote_manager') {
+    summaryParams.action = t('Assign User Manager')
   }
 
   let fallback = t('Operation audit')
@@ -400,8 +409,8 @@ export function buildAuditDetails(entry: AuditLog, t: TFunction) {
     actor = actorName ? `${actorName} (ID: ${actorId})` : `ID: ${actorId}`
   }
   let actorRole = ''
-  if ([1, 10, 100].includes(entry.actor_role)) {
-    actorRole = AUDIT_ROLE_NAMES[entry.actor_role]
+  if ([1, 5, 6, 10, 100].includes(entry.actor_role)) {
+    actorRole = auditRoleName(entry.actor_role, t)
   }
   const authMethod =
     entry.auth_method ||
@@ -452,9 +461,12 @@ export function buildAuditDetails(entry: AuditLog, t: TFunction) {
   }
   if (
     typeof params.role === 'number' &&
-    [0, 1, 10, 100].includes(params.role)
+    [0, 1, 5, 6, 10, 100].includes(params.role)
   ) {
-    params.role = AUDIT_ROLE_NAMES[params.role]
+    params.role = auditRoleName(params.role, t)
+  }
+  if (action === 'user.manage' && params.action === 'promote_manager') {
+    params.action = t('Assign User Manager')
   }
   if (typeof params.method === 'string') {
     params.method = loginMethodLabel(params.method, t)

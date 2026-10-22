@@ -162,14 +162,16 @@ function GroupSelect(props: GroupSelectProps) {
 
 type GroupSpecialUsableRulesEditorProps = {
   value: string
-  groupOptions: string[]
+  userGroupOptions: string[]
+  channelGroupOptions: string[]
   onChange: (value: string) => void
 }
 
 type GroupSectionProps = {
   groupName: string
   items: Rule[]
-  groupOptions: string[]
+  userGroupOptions: string[]
+  channelGroupOptions: string[]
   onUpdate: (id: string, field: keyof Rule, val: string | boolean) => void
   onRemove: (id: string) => void
   onAdd: (groupName: string) => void
@@ -179,7 +181,7 @@ type GroupSectionProps = {
 function GroupSection(props: GroupSectionProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(true)
-  const isKnownGroup = props.groupOptions.includes(props.groupName)
+  const isKnownGroup = props.userGroupOptions.includes(props.groupName)
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
@@ -205,7 +207,7 @@ function GroupSection(props: GroupSectionProps) {
             {!isKnownGroup && (
               <StatusBadge variant='danger' copyable={false}>
                 <AlertTriangle className='mr-1 h-3 w-3' />
-                {t('Not in pricing table')}
+                {t('Not in user groups')}
               </StatusBadge>
             )}
             <StatusBadge variant='neutral' copyable={false}>
@@ -284,15 +286,15 @@ function GroupSection(props: GroupSectionProps) {
                 <div className='col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 sm:col-start-auto sm:row-start-auto'>
                   <GroupSelect
                     className='min-w-0 flex-1'
-                    options={props.groupOptions}
+                    options={props.channelGroupOptions}
                     value={rule.targetGroup}
-                    placeholder={t('Group name')}
+                    placeholder={t('Channel group')}
                     onValueChange={(v) =>
                       props.onUpdate(rule._id, 'targetGroup', v)
                     }
                   />
                   {rule.targetGroup &&
-                    !props.groupOptions.includes(rule.targetGroup) && (
+                    !props.channelGroupOptions.includes(rule.targetGroup) && (
                       <AlertTriangle
                         className='text-destructive h-4 w-4 shrink-0'
                         aria-label={t('Not in pricing table')}
@@ -410,8 +412,8 @@ export function GroupSpecialUsableRulesEditor(
 
   const newGroupCandidates = useMemo(() => {
     const used = new Set(grouped.map((g) => g.name))
-    return props.groupOptions.filter((name) => !used.has(name))
-  }, [grouped, props.groupOptions])
+    return props.userGroupOptions.filter((name) => !used.has(name))
+  }, [grouped, props.userGroupOptions])
 
   return (
     <Card className={sectionCardClassName}>
@@ -436,7 +438,8 @@ export function GroupSpecialUsableRulesEditor(
                 key={group.name}
                 groupName={group.name}
                 items={group.items}
-                groupOptions={props.groupOptions}
+                userGroupOptions={props.userGroupOptions}
+                channelGroupOptions={props.channelGroupOptions}
                 onUpdate={updateRule}
                 onRemove={removeRule}
                 onAdd={addRuleToGroup}
