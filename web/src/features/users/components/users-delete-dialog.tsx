@@ -22,19 +22,26 @@ import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { handleServerError } from '@/lib/handle-server-error'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { deleteUser } from '../api'
 import { ERROR_MESSAGES } from '../constants'
 import { getUserActionMessage } from '../lib'
+import { canManageUser, isDelegatedUserManager } from '../lib/user-actions'
 import { useUsers } from './users-provider'
 
 export function UsersDeleteDialog() {
   const { t } = useTranslation()
   const { open, setOpen, currentRow, triggerRefresh } = useUsers()
   const [isDeleting, setIsDeleting] = useState(false)
+  const viewer = useAuthStore((s) => s.auth.user)
+  const mustReclaimQuota =
+    isDelegatedUserManager(viewer?.role) && currentRow?.quota !== 0
+  const canDelete =
+    !!currentRow && canManageUser(viewer, currentRow) && !mustReclaimQuota
 
   const handleDelete = async () => {
-    if (!currentRow) return
+    if (!currentRow || !canDelete) return
 
     setIsDeleting(true)
     try {
@@ -63,10 +70,16 @@ export function UsersDeleteDialog() {
           {t('This will permanently delete user')}{' '}
           <span className='font-semibold'>{currentRow?.username}</span>
           {t('. This action cannot be undone.')}
+          {mustReclaimQuota && (
+            <p className='text-destructive mt-2'>
+              {t('Reclaim the remaining quota before deleting this user.')}
+            </p>
+          )}
         </>
       }
       confirmText={isDeleting ? t('Deleting...') : t('Delete')}
       destructive
+      disabled={!canDelete}
       isLoading={isDeleting}
       handleConfirm={handleDelete}
     />

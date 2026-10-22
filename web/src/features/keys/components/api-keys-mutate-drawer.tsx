@@ -113,8 +113,6 @@ export function ApiKeysMutateDrawer({
   const [initializedTarget, setInitializedTarget] = useState<string | null>(
     null
   )
-  const defaultUseAutoGroup = status?.default_use_auto_group === true
-
   // Fetch models
   const { data: modelsData } = useQuery({
     queryKey: ['user-models'],
@@ -169,7 +167,7 @@ export function ApiKeysMutateDrawer({
       })),
     [groupsData]
   )
-  const backendHasAuto = groups.some((g) => g.value === 'auto')
+  const backendHasAuto = groups.some((group) => group.value === 'auto')
   const availableAutoGroupNames = useMemo(
     () => groups.filter((group) => group.value !== 'auto').map((g) => g.value),
     [groups]
@@ -199,7 +197,9 @@ export function ApiKeysMutateDrawer({
 
   const form = useForm<ApiKeyFormValues>({
     resolver: zodResolver(schema),
-    defaultValues: getApiKeyFormDefaultValues(defaultUseAutoGroup),
+    defaultValues: getApiKeyFormDefaultValues(
+      status?.default_use_auto_group === true && backendHasAuto
+    ),
   })
 
   // Load existing data when updating
@@ -212,12 +212,12 @@ export function ApiKeysMutateDrawer({
       !groupsFetched ||
       groupsFetching ||
       !autoGroupsFetched ||
-      autoGroupsFetching
+      autoGroupsFetching ||
+      (!isUpdate && statusLoading)
     ) {
       return
     }
     if (isUpdate && (!apiKeyFetched || apiKeyFetching)) return
-    if (!isUpdate && statusLoading) return
 
     const target = isUpdate && currentRow ? `update:${currentRow.id}` : 'create'
     if (initializedTarget === target) return
@@ -234,7 +234,9 @@ export function ApiKeysMutateDrawer({
       }
     } else {
       form.reset(
-        getApiKeyFormDefaultValues(defaultUseAutoGroup && backendHasAuto)
+        getApiKeyFormDefaultValues(
+          status?.default_use_auto_group === true && backendHasAuto
+        )
       )
       setInitializedTarget(target)
     }
@@ -243,7 +245,7 @@ export function ApiKeysMutateDrawer({
     isUpdate,
     currentRow,
     form,
-    defaultUseAutoGroup,
+    status?.default_use_auto_group,
     statusLoading,
     backendHasAuto,
     groupsFetched,
@@ -267,19 +269,21 @@ export function ApiKeysMutateDrawer({
   useEffect(() => {
     if (groups.length === 0) return
     const currentGroup = selectedGroup
-    if (currentGroup && !groups.some((g) => g.value === currentGroup)) {
+    const currentGroupIsSelectable = groups.some(
+      (group) => group.value === currentGroup
+    )
+    if (isUpdate && currentGroup === 'auto') return
+    if (currentGroup && !currentGroupIsSelectable) {
       const fallback =
-        groups.find((g) => g.value === 'default')?.value ??
+        groups.find((group) => group.value === 'default')?.value ??
         groups[0]?.value ??
         ''
       form.setValue('group', fallback)
-      if (currentGroup === 'auto') {
-        form.setValue('auto_groups', [])
-        form.setValue('auto_groups_mode', 'inherit')
-        form.setValue('cross_group_retry', false)
-      }
+      form.setValue('auto_groups', [])
+      form.setValue('auto_groups_mode', 'inherit')
+      form.setValue('cross_group_retry', false)
     }
-  }, [groups, form, selectedGroup])
+  }, [groups, form, isUpdate, selectedGroup])
 
   const onSubmit = async (data: ApiKeyFormValues) => {
     setIsSubmitting(true)

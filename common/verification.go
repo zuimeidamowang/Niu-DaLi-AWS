@@ -14,8 +14,9 @@ type verificationValue struct {
 }
 
 const (
-	EmailVerificationPurpose = "v"
-	PasswordResetPurpose     = "r"
+	EmailVerificationPurpose    = "v"
+	PasswordResetPurpose        = "r"
+	ManagedPasswordResetPurpose = "mr"
 )
 
 var verificationMutex sync.Mutex
@@ -55,10 +56,35 @@ func VerifyCodeWithKey(key string, code string, purpose string) bool {
 	return code == value.code
 }
 
+func ConsumeVerificationCodeWithKey(key string, code string, purpose string) bool {
+	verificationMutex.Lock()
+	defer verificationMutex.Unlock()
+
+	mapKey := purpose + key
+	value, okay := verificationMap[mapKey]
+	if !okay || int(time.Since(value.time).Seconds()) >= VerificationValidMinutes*60 || value.code != code {
+		return false
+	}
+	delete(verificationMap, mapKey)
+	return true
+}
+
 func DeleteKey(key string, purpose string) {
 	verificationMutex.Lock()
 	defer verificationMutex.Unlock()
 	delete(verificationMap, purpose+key)
+}
+
+func DeleteVerificationCodeIfMatch(key string, code string, purpose string) bool {
+	verificationMutex.Lock()
+	defer verificationMutex.Unlock()
+
+	mapKey := purpose + key
+	if value, okay := verificationMap[mapKey]; !okay || value.code != code {
+		return false
+	}
+	delete(verificationMap, mapKey)
+	return true
 }
 
 // no lock inside, so the caller must lock the verificationMap before calling!

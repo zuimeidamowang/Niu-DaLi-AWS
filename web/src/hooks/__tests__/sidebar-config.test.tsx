@@ -17,10 +17,17 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, renderHook } from '@testing-library/react'
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from '@tanstack/react-router'
+import { cleanup, render, renderHook, screen } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { CommandMenu } from '@/components/command-menu'
 import { checkIsActive } from '@/components/layout/lib/url-utils'
 import {
   parseSidebarModulesAdmin,
@@ -30,8 +37,18 @@ import { useAuthStore } from '@/stores/auth-store'
 
 import { useSidebarConfig } from '../use-sidebar-config'
 import { useSidebarData } from '../use-sidebar-data'
+import { useSidebarView } from '../use-sidebar-view'
+
+const originalGetAnimations = Object.getOwnPropertyDescriptor(
+  HTMLElement.prototype,
+  'getAnimations'
+)
 
 beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, 'getAnimations', {
+    configurable: true,
+    value: () => [],
+  })
   vi.stubGlobal('localStorage', {
     getItem: () => null,
     setItem: () => undefined,
@@ -41,6 +58,15 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  if (originalGetAnimations) {
+    Object.defineProperty(
+      HTMLElement.prototype,
+      'getAnimations',
+      originalGetAnimations
+    )
+  } else {
+    Reflect.deleteProperty(HTMLElement.prototype, 'getAnimations')
+  }
   vi.unstubAllGlobals()
   useAuthStore.getState().auth.reset()
 })
@@ -221,4 +247,100 @@ describe('chat sidebar after external canvas integration', () => {
       ).toEqual(titles)
     }
   )
+})
+
+function NavigationAccess() {
+  const sidebar = useSidebarView()
+  return (
+    <nav>
+      {sidebar.navGroups.map((group) => (
+        <section key={group.id}>
+          {group.items.map((item) =>
+            'url' in item && item.url ? (
+              <a key={item.title} href={String(item.url)}>
+                {item.title}
+              </a>
+            ) : null
+          )}
+        </section>
+      ))}
+    </nav>
+  )
+}
+
+it.each([1, 5, 6, 10, 100])(
+  'role %s sees the appropriate user-management entry and admin navigation',
+  async (role) => {
+    useAuthStore.getState().auth.setUser({ id: 1, username: 'viewer', role })
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    client.setQueryData(['status'], {})
+    const root = createRootRoute({ component: NavigationAccess })
+    const router = createRouter({
+      routeTree: root,
+      history: createMemoryHistory({ initialEntries: ['/'] }),
+    })
+    await router.load()
+    render(
+      <QueryClientProvider client={client}>
+        <RouterProvider router={router} />
+      </QueryClientProvider>
+    )
+    expect(screen.getByRole('link', { name: 'API Keys' })).toBeVisible()
+    expect(screen.getByRole('link', { name: 'Profile' })).toBeVisible()
+    if (role >= 5) {
+      expect(screen.getByRole('link', { name: 'Users' })).toBeVisible()
+    } else {
+      expect(
+        screen.queryByRole('link', { name: 'Users' })
+      ).not.toBeInTheDocument()
+    }
+    if (role >= 10) {
+      expect(screen.getByRole('link', { name: 'Channels' })).toBeVisible()
+    } else {
+      expect(
+        screen.queryByRole('link', { name: 'Channels' })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('link', { name: 'Subscriptions' })
+      ).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('link', { name: 'System Settings' })
+      ).not.toBeInTheDocument()
+    }
+    client.clear()
+  }
+)
+
+it('third-level user command palette exposes Users without global administration commands', async () => {
+  useAuthStore.getState().auth.setUser({ id: 1, username: 'manager', role: 6 })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  client.setQueryData(['status'], {})
+  const root = createRootRoute({
+    component: () => <CommandMenu open onOpenChange={() => undefined} />,
+  })
+  const router = createRouter({
+    routeTree: root,
+    history: createMemoryHistory({ initialEntries: ['/'] }),
+  })
+  await router.load()
+  render(
+    <QueryClientProvider client={client}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>
+  )
+  expect(await screen.findByRole('option', { name: 'Users' })).toBeVisible()
+  expect(
+    screen.queryByRole('option', { name: 'Channels' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('option', { name: 'Subscriptions' })
+  ).not.toBeInTheDocument()
+  expect(
+    screen.queryByRole('option', { name: 'System Settings' })
+  ).not.toBeInTheDocument()
+  client.clear()
 })

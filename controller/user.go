@@ -337,7 +337,11 @@ func Register(c *gin.Context) {
 func GetAllUsers(c *gin.Context) {
 	pageInfo := common.GetPageQuery(c)
 	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
-	users, total, err := model.GetAllUsers(pageInfo, sortOptions)
+	findUsers := model.FindManagedUsers
+	if c.Query("hierarchy") == "true" {
+		findUsers = model.FindManagedUserTreeRoots
+	}
+	users, total, err := findUsers(userManagementScope(c), "", "", nil, nil, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
 	if err != nil {
 		common.ApiError(c, err)
 		return
@@ -351,8 +355,45 @@ func GetAllUsers(c *gin.Context) {
 }
 
 func SearchUsers(c *gin.Context) {
-	keyword := c.Query("keyword")
-	group := c.Query("group")
+	keyword, group, role, status := userListFilters(c)
+	pageInfo := common.GetPageQuery(c)
+	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
+	findUsers := model.FindManagedUsers
+	if c.Query("hierarchy") == "true" {
+		findUsers = model.FindManagedUserTreeRoots
+	}
+	users, total, err := findUsers(userManagementScope(c), keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(users)
+	common.ApiSuccess(c, pageInfo)
+	return
+}
+
+func GetManagedUserChildren(c *gin.Context) {
+	parentID, err := strconv.Atoi(c.Param("id"))
+	if err != nil || parentID <= 0 {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		return
+	}
+	keyword, group, role, status := userListFilters(c)
+	pageInfo := common.GetPageQuery(c)
+	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
+	users, total, err := model.FindManagedUserChildren(userManagementScope(c), parentID, keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	pageInfo.SetTotal(int(total))
+	pageInfo.SetItems(users)
+	common.ApiSuccess(c, pageInfo)
+}
+
+func userListFilters(c *gin.Context) (string, string, *int, *int) {
 	var role *int
 	if roleStr := c.Query("role"); roleStr != "" {
 		if parsed, err := strconv.Atoi(roleStr); err == nil {
@@ -365,18 +406,30 @@ func SearchUsers(c *gin.Context) {
 			status = &parsed
 		}
 	}
-	pageInfo := common.GetPageQuery(c)
-	sortOptions := model.NewUserSortOptions(c.Query("sort_by"), c.Query("sort_order"))
-	users, total, err := model.SearchUsers(keyword, group, role, status, pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions)
-	if err != nil {
-		common.ApiError(c, err)
-		return
-	}
+	return c.Query("keyword"), c.Query("group"), role, status
+}
 
-	pageInfo.SetTotal(int(total))
-	pageInfo.SetItems(users)
-	common.ApiSuccess(c, pageInfo)
-	return
+func userManagementScope(c *gin.Context) model.UserManagementScope {
+	return model.UserManagementScope{OperatorID: c.GetInt("id"), OperatorRole: c.GetInt("role")}
+}
+
+func writeUserManagementError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound) && common.IsDelegatedUserManager(c.GetInt("role")):
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+	case errors.Is(err, model.ErrUserManagementPermission):
+		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
+	case errors.Is(err, model.ErrInheritedUserGroup):
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+	case errors.Is(err, model.ErrManagedUserBalanceRemaining):
+		common.ApiErrorI18n(c, i18n.MsgManagedUserDeleteBalance)
+	case errors.Is(err, model.ErrManagedUserHasChildren):
+		common.ApiErrorI18n(c, i18n.MsgManagedUserHasChildren)
+	case errors.Is(err, model.ErrQuotaTransferUnavailable):
+		common.ApiErrorI18n(c, i18n.MsgQuotaTransferUnavailable)
+	default:
+		common.ApiError(c, err)
+	}
 }
 
 func canManageTargetRole(myRole int, targetRole int) bool {
@@ -389,14 +442,15 @@ func GetUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	user, err := model.GetUserById(id, false)
+	scope := userManagementScope(c)
+	user, err := model.GetUserByIdInManagementScope(id, scope, false)
 	if err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
-	myRole := c.GetInt("role")
-	if !canManageTargetRole(myRole, user.Role) {
-		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionSameLevel)
+	user.GroupInherited, err = model.IsThirdLevelUserDescendant(user.Id)
+	if err != nil {
+		common.ApiError(c, err)
 		return
 	}
 	user.AdminPermissions = authz.Capabilities(user.Id, user.Role)
@@ -531,6 +585,9 @@ func calculateUserPermissions(userRole int) map[string]any {
 		// 超级管理员不需要边栏设置功能
 		permissions["sidebar_settings"] = false
 		permissions["sidebar_modules"] = map[string]any{}
+	} else if common.IsDelegatedUserManager(userRole) {
+		permissions["sidebar_settings"] = true
+		permissions["sidebar_modules"] = map[string]any{"admin": map[string]any{"enabled": true, "user": true, "channel": false, "models": false, "redemption": false, "setting": false}}
 	} else if userRole == common.RoleAdminUser {
 		// 管理员可以设置边栏，但不包含系统设置功能
 		permissions["sidebar_settings"] = true
@@ -579,7 +636,9 @@ func generateDefaultSidebarConfig(userRole int) string {
 	}
 
 	// 管理员区域 - 根据角色决定
-	if userRole == common.RoleAdminUser {
+	if common.IsDelegatedUserManager(userRole) {
+		defaultConfig["admin"] = map[string]any{"enabled": true, "user": true}
+	} else if userRole == common.RoleAdminUser {
 		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]any{
 			"enabled":    true,
@@ -662,9 +721,10 @@ func UpdateUser(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserInputInvalid, map[string]any{"Error": err.Error()})
 		return
 	}
-	originUser, err := model.GetUserById(updatedUser.Id, false)
+	scope := userManagementScope(c)
+	originUser, err := model.GetUserByIdInManagementScope(updatedUser.Id, scope, false)
 	if err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
 	if updatedUser.Role != common.RoleGuestUser && updatedUser.Role != originUser.Role {
@@ -672,22 +732,75 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	updatedUser.Role = originUser.Role
-	myRole := c.GetInt("role")
-	if !canManageTargetRole(myRole, originUser.Role) {
+	if !scope.CanManage(originUser) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
+	if scope.OperatorRole >= common.RoleAdminUser && updatedUser.Password != "" {
+		common.ApiErrorMsg(c, "管理员不能直接设置其他用户的密码，请发送密码重置链接")
+		return
+	}
+	if updatedUser.Group != "" && updatedUser.Group != originUser.Group && !service.IsKnownUserGroup(updatedUser.Group) {
+		common.ApiErrorMsg(c, "用户分组不存在")
+		return
+	}
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		if updatedUser.CreatorID != 0 || updatedUser.AdminPermissions != nil || (updatedUser.Group != "" && updatedUser.Group != originUser.Group) {
+			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+			return
+		}
+		updatedUser.Group = originUser.Group
+		if updatedUser.Password != "" {
+			payload, err := common.Marshal(service.UserPasswordResetContext{TargetUserID: updatedUser.Id})
+			if err != nil {
+				common.ApiError(c, err)
+				return
+			}
+			if middleware.RequireSecurityProof(c, service.VerificationOperation{Scope: service.VerificationScopeUserPasswordReset, Context: payload}) == nil {
+				return
+			}
+		}
+	}
 	updatePassword := updatedUser.Password != ""
 	authzTouched := false
+	var inheritedGroupChangedIDs []int
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
+		locked, err := scope.LockManagedUser(tx, updatedUser.Id, false)
+		if err != nil {
+			return err
+		}
+		if locked.Role != originUser.Role {
+			return model.ErrUserManagementPermission
+		}
+		if updatedUser.Group == "" {
+			updatedUser.Group = locked.Group
+		}
+		if scope.OperatorRole >= common.RoleAdminUser && updatedUser.Group != locked.Group {
+			inherited, err := model.IsThirdLevelUserDescendantTx(tx, locked.Id)
+			if err != nil {
+				return err
+			}
+			if inherited {
+				return model.ErrInheritedUserGroup
+			}
+		}
+		if common.IsDelegatedUserManager(scope.OperatorRole) {
+			updatedUser.Group = locked.Group
+		}
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
 			return err
+		}
+		if locked.Role == common.RoleThirdLevelUser {
+			inheritedGroupChangedIDs, err = model.UpdateThirdLevelUserDescendantGroupsTx(tx, locked.Id, updatedUser.Group)
+			if err != nil {
+				return err
+			}
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, updatedUser.Id, originUser.Role, updatedUser.AdminPermissions)
 		authzTouched = touched
 		return err
 	}); err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
 	if authzTouched {
@@ -696,14 +809,27 @@ func UpdateUser(c *gin.Context) {
 			return
 		}
 	}
-	if updatedUser.AuthVersion > originUser.AuthVersion {
-		if _, err := model.RevokeAllUserSessions(updatedUser.Id, "admin_user_update"); err != nil {
-			common.ApiError(c, err)
-			return
+	var postCommitErrors []error
+	if err := model.PublishUserAuthCache(updatedUser.Id); err != nil {
+		postCommitErrors = append(postCommitErrors, err)
+	}
+	for _, userID := range inheritedGroupChangedIDs {
+		if err := model.PublishUserAuthCache(userID); err != nil {
+			postCommitErrors = append(postCommitErrors, err)
 		}
 	}
-	if err := model.PublishUserAuthCache(updatedUser.Id); err != nil {
-		common.ApiError(c, err)
+	if updatedUser.AuthVersion > originUser.AuthVersion {
+		if _, err := model.RevokeAllUserSessions(updatedUser.Id, "admin_user_update"); err != nil {
+			postCommitErrors = append(postCommitErrors, err)
+		}
+	}
+	for _, userID := range inheritedGroupChangedIDs {
+		if _, err := model.RevokeAllUserSessions(userID, "admin_inherited_group_update"); err != nil {
+			postCommitErrors = append(postCommitErrors, err)
+		}
+	}
+	if len(postCommitErrors) > 0 {
+		common.ApiError(c, errors.Join(postCommitErrors...))
 		return
 	}
 	recordManageAuditFor(c, updatedUser.Id, "user.update", map[string]any{
@@ -915,19 +1041,25 @@ func DeleteUser(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	originUser, err := model.GetUserById(id, false)
+	scope := userManagementScope(c)
+	originUser, err := model.GetUserByIdInManagementScope(id, scope, false)
 	if err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
-	myRole := c.GetInt("role")
-	if myRole <= originUser.Role {
+	if originUser.Role == common.RoleRootUser || !scope.CanManage(originUser) {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
-	err = model.HardDeleteUserById(id)
+	if common.IsDelegatedUserManager(scope.OperatorRole) && common.RedisEnabled {
+		if _, err := model.GetUserCache(id); err != nil {
+			writeUserManagementError(c, model.ErrQuotaTransferUnavailable)
+			return
+		}
+	}
+	err = originUser.HardDelete(scope)
 	if err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
 	recordManageAuditFor(c, originUser.Id, "user.delete", map[string]any{
@@ -983,9 +1115,17 @@ func CreateUser(c *gin.Context) {
 	if user.DisplayName == "" {
 		user.DisplayName = user.Username
 	}
+	if user.Role == common.RoleGuestUser {
+		user.Role = common.RoleCommonUser
+	}
 	myRole := c.GetInt("role")
-	if user.Role >= myRole {
+	if !common.IsValidateRole(user.Role) || user.Role == common.RoleGuestUser || user.Role >= myRole {
 		common.ApiErrorI18n(c, i18n.MsgUserCannotCreateHigherLevel)
+		return
+	}
+	canCreateManagedRole := user.Role == common.RoleCommonUser || (myRole == common.RoleThirdLevelUser && user.Role == common.RoleUserManager)
+	if common.IsDelegatedUserManager(myRole) && (!canCreateManagedRole || user.CreatorID != 0 || user.AdminPermissions != nil || user.Group != "" || user.Quota != 0) {
+		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
 	// Even for admin users, we cannot fully trust them!
@@ -997,14 +1137,14 @@ func CreateUser(c *gin.Context) {
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
-		if err := cleanUser.InsertWithTx(tx, 0); err != nil {
+		if err := userManagementScope(c).InsertUser(tx, &cleanUser); err != nil {
 			return err
 		}
 		touched, err := updateAdminPermissionsForUserInTx(c, tx, cleanUser.Id, cleanUser.Role, user.AdminPermissions)
 		authzTouched = touched
 		return err
 	}); err != nil {
-		common.ApiError(c, err)
+		writeUserManagementError(c, err)
 		return
 	}
 	if authzTouched {
@@ -1049,12 +1189,10 @@ type ManageRequest struct {
 	Mode   string `json:"mode"`
 }
 
-// ManageUser Only admin user can do this
+// ManageUser applies account actions within the operator's management scope.
 func ManageUser(c *gin.Context) {
 	var req ManageRequest
-	err := common.DecodeJson(c.Request.Body, &req)
-
-	if err != nil {
+	if err := common.DecodeJson(c.Request.Body, &req); err != nil {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
 		return
 	}
@@ -1062,131 +1200,131 @@ func ManageUser(c *gin.Context) {
 		manageUserQuota(c, req)
 		return
 	}
-	user := model.User{
-		Id: req.Id,
-	}
-	// Fill attributes
-	model.DB.Unscoped().Where(&user).First(&user)
-	if user.Id == 0 {
-		common.ApiErrorI18n(c, i18n.MsgUserNotExists)
-		return
-	}
-	myRole := c.GetInt("role")
-	if !canManageTargetRole(myRole, user.Role) {
+	scope := userManagementScope(c)
+	if common.IsDelegatedUserManager(scope.OperatorRole) && req.Action != "enable" && req.Action != "disable" && req.Action != "delete" && req.Action != "promote_manager" && req.Action != "demote" {
 		common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 		return
 	}
-	switch req.Action {
-	case "disable":
-		user.Status = common.UserStatusDisabled
-		if user.Role == common.RoleRootUser {
-			common.ApiErrorI18n(c, i18n.MsgUserCannotDisableRootUser)
+	if req.Action == "delete" {
+		user, err := model.GetUserByIdInManagementScope(req.Id, scope, false)
+		if err != nil {
+			writeUserManagementError(c, err)
 			return
 		}
-	case "enable":
-		user.Status = common.UserStatusEnabled
-	case "delete":
-		if user.Role == common.RoleRootUser {
-			common.ApiErrorI18n(c, i18n.MsgUserCannotDeleteRootUser)
+		if !scope.CanManage(user) || user.Role == common.RoleRootUser {
+			common.ApiErrorI18n(c, i18n.MsgUserNoPermissionHigherLevel)
 			return
 		}
-		if err := user.Delete(); err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"success": false,
-				"message": err.Error(),
-			})
+		if common.IsDelegatedUserManager(scope.OperatorRole) && common.RedisEnabled {
+			if _, err := model.GetUserCache(user.Id); err != nil {
+				writeUserManagementError(c, model.ErrQuotaTransferUnavailable)
+				return
+			}
+		}
+		if err := user.Delete(scope); err != nil {
+			writeUserManagementError(c, err)
 			return
 		}
-		// 删除用户后，强制清理 Redis 中所有该用户令牌的缓存，
-		// 避免已缓存的令牌在 TTL 过期前仍能通过 TokenAuth 校验。
 		if err := model.InvalidateUserTokensCache(user.Id); err != nil {
-			common.SysLog(fmt.Sprintf("failed to invalidate tokens cache for user %d: %s", user.Id, err.Error()))
+			common.SysError(fmt.Sprintf("failed to invalidate tokens cache for user %d: %v", user.Id, err))
 		}
-		recordManageAuditFor(c, user.Id, "user.manage", map[string]any{
-			"action":   req.Action,
-			"username": user.Username,
-			"id":       user.Id,
-		})
-		c.JSON(http.StatusOK, gin.H{
-			"success": true,
-			"message": "",
-		})
-		return
-	case "promote":
-		if myRole != common.RoleRootUser {
-			common.ApiErrorI18n(c, i18n.MsgUserAdminCannotPromote)
-			return
-		}
-		if user.Role >= common.RoleAdminUser {
-			common.ApiErrorI18n(c, i18n.MsgUserAlreadyAdmin)
-			return
-		}
-		user.Role = common.RoleAdminUser
-	case "demote":
-		if user.Role == common.RoleRootUser {
-			common.ApiErrorI18n(c, i18n.MsgUserCannotDemoteRootUser)
-			return
-		}
-		if user.Role == common.RoleCommonUser {
-			common.ApiErrorI18n(c, i18n.MsgUserAlreadyCommon)
-			return
-		}
-		user.Role = common.RoleCommonUser
-	default:
-		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
+		recordManageAuditFor(c, user.Id, "user.manage", map[string]any{"action": req.Action, "username": user.Username, "id": user.Id})
+		common.ApiSuccess(c, nil)
 		return
 	}
-
-	if req.Action == "demote" {
-		if err := model.DB.Transaction(func(tx *gorm.DB) error {
-			if err := user.UpdateWithTx(tx, false); err != nil {
+	var user *model.User
+	var previousAuthVersion int64
+	authzTouched := false
+	clearCreator := false
+	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		user, err = scope.LockManagedUser(tx, req.Id, true)
+		if err != nil {
+			return err
+		}
+		previousAuthVersion = user.AuthVersion
+		switch req.Action {
+		case "disable":
+			if user.Role == common.RoleRootUser {
+				return model.ErrUserManagementPermission
+			}
+			user.Status = common.UserStatusDisabled
+		case "enable":
+			user.Status = common.UserStatusEnabled
+		case "promote":
+			if scope.OperatorRole != common.RoleRootUser || user.Role >= common.RoleAdminUser {
+				return model.ErrUserManagementPermission
+			}
+			user.Role = common.RoleAdminUser
+		case "promote_manager":
+			if scope.OperatorRole < common.RoleThirdLevelUser || user.Role != common.RoleCommonUser {
+				return model.ErrUserManagementPermission
+			}
+			user.Role = common.RoleUserManager
+		case "promote_third_level":
+			if scope.OperatorRole < common.RoleAdminUser || user.Role != common.RoleCommonUser {
+				return model.ErrUserManagementPermission
+			}
+			user.Role = common.RoleThirdLevelUser
+			user.CreatorID = 0
+			clearCreator = true
+		case "demote":
+			if user.Role == common.RoleRootUser || user.Role == common.RoleCommonUser {
+				return model.ErrUserManagementPermission
+			}
+			if common.IsDelegatedUserManager(user.Role) {
+				if err := model.CheckManagedUserHasActiveChildren(tx, user.Id); err != nil {
+					return err
+				}
+			}
+			user.Role = common.RoleCommonUser
+		default:
+			return errors.New(common.TranslateMessage(c, i18n.MsgInvalidParams))
+		}
+		if err := user.UpdateWithTx(tx, false); err != nil {
+			return err
+		}
+		if clearCreator {
+			if err := tx.Model(&model.User{}).Where("id = ?", user.Id).Update("creator_id", 0).Error; err != nil {
 				return err
 			}
-			return authz.ClearUserAuthorizationInTx(tx, user.Id)
-		}); err != nil {
-			common.ApiError(c, err)
-			return
+			user.CreatorID = 0
 		}
+		if req.Action == "demote" || req.Action == "promote_manager" || req.Action == "promote_third_level" {
+			authzTouched = true
+			return authz.ClearUserAuthorizationInTx(tx, user.Id)
+		}
+		return nil
+	})
+	if err != nil {
+		writeUserManagementError(c, err)
+		return
+	}
+	if authzTouched {
 		if err := authz.ReloadPolicy(); err != nil {
 			common.ApiError(c, err)
 			return
 		}
-		if err := model.PublishUserAuthCache(user.Id); err != nil {
-			common.ApiError(c, err)
-			return
+	}
+	if err := model.PublishUserAuthCache(user.Id); err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if user.AuthVersion > previousAuthVersion {
+		reason := "user_security_changed"
+		if req.Action == "demote" {
+			reason = "admin_demote"
 		}
-		if _, err := model.RevokeAllUserSessions(user.Id, "admin_demote"); err != nil {
-			common.ApiError(c, err)
-			return
-		}
-	} else {
-		if err := user.Update(false); err != nil {
+		if _, err := model.RevokeAllUserSessions(user.Id, reason); err != nil {
 			common.ApiError(c, err)
 			return
 		}
 	}
-	// Update/UpdateWithTx has already published the new user hash and revoked
-	// browser sessions exactly once. Only PAT/relay token caches still need an
-	// explicit invalidation; deleting the user hash here would discard the
-	// freshly published auth-version floor.
 	if err := model.InvalidateUserTokensCache(user.Id); err != nil {
-		common.SysLog(fmt.Sprintf("failed to invalidate tokens cache for user %d: %s", user.Id, err.Error()))
+		common.SysError(fmt.Sprintf("failed to invalidate tokens cache for user %d: %v", user.Id, err))
 	}
-	recordManageAuditFor(c, user.Id, "user.manage", map[string]any{
-		"action":   req.Action,
-		"username": user.Username,
-		"id":       user.Id,
-	})
-	clearUser := model.User{
-		Role:   user.Role,
-		Status: user.Status,
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"success": true,
-		"message": "",
-		"data":    clearUser,
-	})
-	return
+	recordManageAuditFor(c, user.Id, "user.manage", map[string]any{"action": req.Action, "username": user.Username, "id": user.Id})
+	common.ApiSuccess(c, model.User{Role: user.Role, Status: user.Status})
 }
 
 type topUpRequest struct {

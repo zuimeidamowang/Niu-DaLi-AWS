@@ -68,11 +68,23 @@ export const getUserStatusOptions = (t: (key: string) => string) => [
 
 export const USER_ROLE = {
   USER: 1,
+  USER_MANAGER: 5,
+  THIRD_LEVEL_USER: 6,
   ADMIN: 10,
   ROOT: 100,
 } as const
 
 export const USER_ROLES = {
+  [USER_ROLE.USER_MANAGER]: {
+    labelKey: 'User Manager',
+    value: USER_ROLE.USER_MANAGER,
+    icon: Users,
+  },
+  [USER_ROLE.THIRD_LEVEL_USER]: {
+    labelKey: 'Third-level User',
+    value: USER_ROLE.THIRD_LEVEL_USER,
+    icon: Users,
+  },
   [USER_ROLE.USER]: {
     labelKey: 'User',
     value: USER_ROLE.USER,
@@ -92,6 +104,16 @@ export const USER_ROLES = {
 
 export const getUserRoleOptions = (t: (key: string) => string) => [
   { label: t('User'), value: String(USER_ROLE.USER), icon: User },
+  {
+    label: t('User Manager'),
+    value: String(USER_ROLE.USER_MANAGER),
+    icon: Users,
+  },
+  {
+    label: t('Third-level User'),
+    value: String(USER_ROLE.THIRD_LEVEL_USER),
+    icon: Users,
+  },
   { label: t('Admin'), value: String(USER_ROLE.ADMIN), icon: Users },
   { label: t('Root'), value: String(USER_ROLE.ROOT), icon: Shield },
 ]

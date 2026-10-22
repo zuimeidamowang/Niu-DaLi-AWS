@@ -122,6 +122,9 @@ const (
 	MsgUserTelegramNotBound          = "user.telegram_not_bound"
 	MsgUserLinuxDOIdEmpty            = "user.linux_do_id_empty"
 	MsgUserQuotaChangeZero           = "user.quota_change_zero"
+	MsgManagedUserDeleteBalance      = "user.managed_delete_balance"
+	MsgManagedUserHasChildren        = "user.managed_user_has_children"
+	MsgQuotaTransferUnavailable      = "user.quota_transfer_unavailable"
 )
 
 // Quota related messages

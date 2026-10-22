@@ -16,20 +16,26 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 
 import { Dialog } from '@/components/dialog'
+import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { getSelf } from '@/lib/api'
 import { getCurrencyDisplay, getCurrencyLabel } from '@/lib/currency'
 import { formatQuota, parseQuotaFromDollars } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
+import { requireServerSuccess } from '@/lib/server-error-message'
 import { cn } from '@/lib/utils'
+import { useAuthStore } from '@/stores/auth-store'
 
 import { adjustUserQuota } from '../api'
+import { isDelegatedUserManager } from '../lib/user-actions'
 import type { QuotaAdjustMode } from '../types'
 
 interface UserQuotaDialogProps {
@@ -45,6 +51,17 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const [mode, setMode] = useState<QuotaAdjustMode>('add')
   const [amount, setAmount] = useState('')
   const [loading, setLoading] = useState(false)
+  const viewer = useAuthStore((s) => s.auth.user)
+  const isDelegatedManager = isDelegatedUserManager(viewer?.role)
+  const queryClient = useQueryClient()
+  const { data: managerBalance, refetch: refetchManagerBalance } = useQuery({
+    queryKey: ['user-manager-balance', viewer?.id],
+    queryFn: async () => {
+      const result = requireServerSuccess(await getSelf())
+      return Number(result.data?.quota ?? 0)
+    },
+    enabled: props.open && isDelegatedManager,
+  })
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -73,6 +90,7 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
   const handleConfirm = async () => {
     if (!amount && mode !== 'override') return
     if (quotaValue <= 0 && mode !== 'override') return
+    if (isDelegatedManager && amountValue < 0) return
 
     setLoading(true)
     try {
@@ -90,6 +108,19 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
         setMode('add')
         props.onOpenChange(false)
         props.onSuccess()
+        if (isDelegatedManager) {
+          const balanceResult = await refetchManagerBalance()
+          const auth = useAuthStore.getState().auth
+          const currentAuthUser = auth.user
+          if (
+            balanceResult.data !== undefined &&
+            viewer &&
+            currentAuthUser?.id === viewer.id
+          ) {
+            auth.setUser({ ...currentAuthUser, quota: balanceResult.data })
+          }
+          await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+        }
       } else {
         handleServerError(result, t('Failed to adjust quota'))
       }
@@ -130,6 +161,21 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
       }
     >
       <div className='space-y-4'>
+        {isDelegatedManager && (
+          <Alert>
+            <AlertDescription>
+              <p>
+                {t('Your available balance')}:{' '}
+                {formatQuota(managerBalance ?? viewer?.quota ?? 0)}
+              </p>
+              <p>
+                {t(
+                  'Quota increases are deducted from your balance. Reclaimed quota is returned to your balance.'
+                )}
+              </p>
+            </AlertDescription>
+          </Alert>
+        )}
         <div className='text-muted-foreground text-sm'>{getPreviewText()}</div>
 
         <div className='space-y-2'>
@@ -149,6 +195,7 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
                   setMode(m)
                   setAmount('')
                 }}
+                aria-pressed={mode === m}
               >
                 {m === 'add' && t('Add')}
                 {!(m === 'add') && m === 'subtract' && t('Subtract')}
@@ -159,13 +206,14 @@ export function UserQuotaDialog(props: UserQuotaDialogProps) {
         </div>
 
         <div className='space-y-2'>
-          <Label>
+          <Label htmlFor='user-quota-amount'>
             {t('Amount')} ({currencyLabel})
           </Label>
           <Input
+            id='user-quota-amount'
             type='number'
             step={tokensOnly ? 1 : 0.000001}
-            min={mode === 'override' ? undefined : 0}
+            min={mode === 'override' && !isDelegatedManager ? undefined : 0}
             placeholder={placeholder}
             value={amount}
             onChange={(e) => setAmount(e.target.value)}

@@ -292,3 +292,7 @@ custom_oauth.name_empty: "提供商名称不能为空"
 custom_oauth.has_bindings: "无法删除已有用户绑定的提供商"
 custom_oauth.binding_not_found: "OAuth 绑定不存在"
 custom_oauth.provider_id_field_invalid: "无法从提供商响应中提取用户 ID"
+
+user.managed_delete_balance: "请先回收该用户的剩余额度，再删除用户"
+user.managed_user_has_children: "请先处理该用户管理的下级用户，再删除或降级该用户"
+user.quota_transfer_unavailable: "额度划拨暂不可用，请在账务同步后重试"

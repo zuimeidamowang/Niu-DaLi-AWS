@@ -1,6 +1,7 @@
 package service
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -13,6 +14,16 @@ import (
 
 func GetUserUsableGroups(userGroup string) map[string]string {
 	groupsCopy := setting.GetUserUsableGroupsCopy()
+	if ratio_setting.ContainsGroupRatio("default") {
+		if _, ok := groupsCopy["default"]; !ok {
+			groupsCopy["default"] = setting.GetUsableGroupDescription("default")
+		}
+	}
+	if !setting.UserGroupsConfigured() && userGroup != "" && ratio_setting.ContainsGroupRatio(userGroup) {
+		if _, ok := groupsCopy[userGroup]; !ok {
+			groupsCopy[userGroup] = "用户分组"
+		}
+	}
 	if userGroup != "" {
 		specialSettings, b := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.Get(userGroup)
 		if b {
@@ -32,10 +43,6 @@ func GetUserUsableGroups(userGroup string) map[string]string {
 				}
 			}
 		}
-		// 如果userGroup不在UserUsableGroups中，返回UserUsableGroups + userGroup
-		if _, ok := groupsCopy[userGroup]; !ok {
-			groupsCopy[userGroup] = "用户分组"
-		}
 	}
 	return groupsCopy
 }
@@ -50,6 +57,54 @@ func IsUserSelectableGroup(userGroup, groupName string) bool {
 		return false
 	}
 	return GroupInUserUsableGroups(userGroup, groupName) && ratio_setting.ContainsGroupRatio(groupName)
+}
+
+func GetUserGroupNames() []string {
+	names := make(map[string]struct{})
+	addName := func(name string) {
+		if name != "" && name != "auto" {
+			names[name] = struct{}{}
+		}
+	}
+	for name := range setting.GetUserGroupsCopy() {
+		addName(name)
+	}
+	if !setting.UserGroupsConfigured() {
+		for name := range ratio_setting.GetGroupRatioCopy() {
+			addName(name)
+		}
+		for name := range setting.GetUserUsableGroupsCopy() {
+			addName(name)
+		}
+		for name := range common.GetTopupGroupRatioCopy() {
+			addName(name)
+		}
+		for name := range ratio_setting.GetGroupRatioSetting().GroupGroupRatio.ReadAll() {
+			addName(name)
+		}
+		for name := range ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup.ReadAll() {
+			addName(name)
+		}
+	}
+	names["default"] = struct{}{}
+	groupNames := make([]string, 0, len(names))
+	for name := range names {
+		groupNames = append(groupNames, name)
+	}
+	slices.Sort(groupNames)
+	return groupNames
+}
+
+func IsKnownUserGroup(name string) bool {
+	if name == "" || name == "auto" {
+		return false
+	}
+	for _, userGroup := range GetUserGroupNames() {
+		if userGroup == name {
+			return true
+		}
+	}
+	return false
 }
 
 // GetUserAutoGroup 根据用户分组获取自动分组设置

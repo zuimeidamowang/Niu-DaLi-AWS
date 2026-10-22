@@ -141,22 +141,29 @@ func SetApiRouter(router *gin.Engine) {
 				selfRoute.DELETE("/oauth/bindings/:provider_id", controller.UnbindCustomOAuth)
 			}
 
+			managedUsers := userRoute.Group("/")
+			managedUsers.Use(middleware.UserManagementAuth())
+			{
+				managedUsers.GET("/", controller.GetAllUsers)
+				managedUsers.GET("/search", controller.SearchUsers)
+				managedUsers.GET("/children/:id", controller.GetManagedUserChildren)
+				managedUsers.GET("/:id", controller.GetUser)
+				managedUsers.POST("/", controller.CreateUser)
+				managedUsers.POST("/manage", controller.ManageUser)
+				managedUsers.PUT("/", controller.UpdateUser)
+				managedUsers.DELETE("/:id", controller.DeleteUser)
+			}
+
 			adminRoute := userRoute.Group("/")
 			adminRoute.Use(middleware.AdminAuth())
 			{
-				adminRoute.GET("/", controller.GetAllUsers)
 				adminRoute.GET("/topup", controller.GetAllTopUps)
 				adminRoute.POST("/topup/complete", controller.AdminCompleteTopUp)
-				adminRoute.GET("/search", controller.SearchUsers)
 				adminRoute.GET("/:id/oauth/bindings", controller.GetUserOAuthBindingsByAdmin)
 				adminRoute.DELETE("/:id/oauth/bindings/:provider_id", controller.UnbindCustomOAuthByAdmin)
 				adminRoute.DELETE("/:id/bindings/:binding_type", controller.AdminClearUserBinding)
-				adminRoute.GET("/:id", controller.GetUser)
-				adminRoute.POST("/", controller.CreateUser)
-				adminRoute.POST("/manage", controller.ManageUser)
-				adminRoute.PUT("/", controller.UpdateUser)
-				adminRoute.DELETE("/:id", controller.DeleteUser)
 				adminRoute.DELETE("/:id/reset_passkey", controller.AdminResetPasskey)
+				adminRoute.POST("/:id/reset_password", middleware.UserCriticalRateLimit("admin-user-password-reset"), middleware.DisableCache(), controller.AdminSendUserPasswordResetEmail)
 
 				// Admin 2FA routes
 				adminRoute.GET("/2fa/stats", controller.Admin2FAStats)
@@ -351,6 +358,11 @@ func SetApiRouter(router *gin.Engine) {
 		groupRoute.Use(middleware.AdminAuth())
 		{
 			groupRoute.GET("/", controller.GetGroups)
+		}
+		userGroupRoute := apiRouter.Group("/user_group")
+		userGroupRoute.Use(middleware.AdminAuth())
+		{
+			userGroupRoute.GET("/", controller.GetUserGroupNames)
 		}
 
 		prefillGroupRoute := apiRouter.Group("/prefill_group")

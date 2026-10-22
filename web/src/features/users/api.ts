@@ -29,6 +29,7 @@ import type {
   UserFormData,
   ManageUserAction,
   ManageUserQuotaPayload,
+  GetManagedUserChildrenParams,
   ApiResponse,
 } from './types'
 
@@ -42,11 +43,12 @@ import type {
 export async function getUsers(
   params: GetUsersParams = {}
 ): Promise<GetUsersResponse> {
-  const { p = 1, page_size = 10, sort_by, sort_order } = params
+  const { p = 1, page_size = 10, hierarchy, sort_by, sort_order } = params
   const res = await api.get('/api/user/', {
     params: {
       p,
       page_size,
+      hierarchy,
       sort_by,
       sort_order,
     },
@@ -67,6 +69,7 @@ export async function searchUsers(
     status = '',
     p = 1,
     page_size = 10,
+    hierarchy,
     sort_by,
     sort_order,
   } = params
@@ -75,11 +78,41 @@ export async function searchUsers(
   queryParams.set('group', group)
   if (role) queryParams.set('role', role)
   if (status) queryParams.set('status', status)
+  if (hierarchy) queryParams.set('hierarchy', 'true')
   queryParams.set('p', String(p))
   queryParams.set('page_size', String(page_size))
   if (sort_by) queryParams.set('sort_by', sort_by)
   if (sort_order) queryParams.set('sort_order', sort_order)
   const res = await api.get(`/api/user/search?${queryParams.toString()}`)
+  return res.data
+}
+
+export async function getManagedUserChildren(
+  id: number,
+  params: GetManagedUserChildrenParams = {}
+): Promise<GetUsersResponse> {
+  const {
+    p = 1,
+    page_size = 100,
+    keyword = '',
+    group = '',
+    role = '',
+    status = '',
+    sort_by,
+    sort_order,
+  } = params
+  const queryParams = new URLSearchParams()
+  queryParams.set('p', String(p))
+  queryParams.set('page_size', String(page_size))
+  if (keyword) queryParams.set('keyword', keyword)
+  if (group) queryParams.set('group', group)
+  if (role) queryParams.set('role', role)
+  if (status) queryParams.set('status', status)
+  if (sort_by) queryParams.set('sort_by', sort_by)
+  if (sort_order) queryParams.set('sort_order', sort_order)
+  const res = await api.get(
+    `/api/user/children/${id}?${queryParams.toString()}`
+  )
   return res.data
 }
 
@@ -105,8 +138,16 @@ export async function createUser(
  * Update an existing user
  */
 export async function updateUser(
-  data: UserFormData & { id: number }
+  data: UserFormData & { id: number },
+  proofToken?: string
 ): Promise<ApiResponse<Partial<User>>> {
+  if (proofToken) {
+    const res = await api.put('/api/user/', data, {
+      headers: { 'X-Security-Proof': proofToken },
+      singleUseAuthorization: true,
+    })
+    return res.data
+  }
   const res = await api.put('/api/user/', data)
   return res.data
 }
@@ -148,6 +189,17 @@ export async function resetUserPasskey(id: number): Promise<ApiResponse> {
   return res.data
 }
 
+export async function sendUserPasswordResetEmail(
+  id: number,
+  proofToken: string
+): Promise<ApiResponse> {
+  const res = await api.post(`/api/user/${id}/reset_password`, undefined, {
+    headers: { 'X-Security-Proof': proofToken },
+    singleUseAuthorization: true,
+  })
+  return res.data
+}
+
 /**
  * Reset user's Two-Factor Authentication setup
  */
@@ -161,6 +213,14 @@ export async function resetUserTwoFA(id: number): Promise<ApiResponse> {
  */
 export async function getGroups(): Promise<ApiResponse<string[]>> {
   const res = await api.get('/api/group/')
+  return res.data
+}
+
+/**
+ * Get available user groups for administrator assignment
+ */
+export async function getUserGroupNames(): Promise<ApiResponse<string[]>> {
+  const res = await api.get('/api/user_group/')
   return res.data
 }
 

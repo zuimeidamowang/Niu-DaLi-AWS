@@ -68,6 +68,7 @@ import {
 type GroupFormValues = {
   GroupRatio: string
   TopupGroupRatio: string
+  UserGroups: string
   UserUsableGroups: string
   GroupGroupRatio: string
   AutoGroups: string
@@ -78,18 +79,22 @@ type GroupFormValues = {
 
 type GroupRatioFormProps = {
   form: UseFormReturn<GroupFormValues>
+  legacyUserGroupNames: string[]
   onSave: (values: GroupFormValues) => Promise<void>
   isSaving: boolean
 }
 
 export const GroupRatioForm = memo(function GroupRatioForm({
   form,
+  legacyUserGroupNames,
   onSave,
   isSaving,
 }: GroupRatioFormProps) {
   const { t } = useTranslation()
   const values = useWatch({ control: form.control })
   const [editMode, setEditMode] = useState<'visual' | 'json'>('visual')
+  const [userGroupSettingsInvalid, setUserGroupSettingsInvalid] =
+    useState(false)
   const [guideOpen, setGuideOpen] = useState(false)
   const [section, setSection] = useState<GroupSettingsSection>('pricing')
 
@@ -158,7 +163,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                 requestAnimationFrame(() => form.setFocus('MaxTokenAutoGroups'))
               }
             })}
-            disabled={isSaving}
+            disabled={isSaving || userGroupSettingsInvalid}
           >
             {isSaving ? t('Saving...') : t('Save group settings')}
           </Button>
@@ -169,6 +174,9 @@ export const GroupRatioForm = memo(function GroupRatioForm({
             onSectionChange={setSection}
             groupRatio={values.GroupRatio ?? ''}
             topupGroupRatio={values.TopupGroupRatio ?? ''}
+            userGroups={values.UserGroups ?? ''}
+            legacyUserGroupNames={legacyUserGroupNames}
+            onUserGroupValidationChange={setUserGroupSettingsInvalid}
             userUsableGroups={values.UserUsableGroups ?? ''}
             groupGroupRatio={values.GroupGroupRatio ?? ''}
             autoGroups={values.AutoGroups ?? ''}
@@ -236,7 +244,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               name='GroupRatio'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('Group ratios')}</FormLabel>
+                  <FormLabel>{t('Channel group ratios')}</FormLabel>
                   <FormControl>
                     <JsonCodeEditor
                       value={field.value}
@@ -248,7 +256,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'JSON map of group → ratio applied when the user selects the group explicitly.'
+                      'JSON map of channel group → ratio applied when the user selects the group explicitly.'
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -261,7 +269,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               name='TopupGroupRatio'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('Top-up group ratios')}</FormLabel>
+                  <FormLabel>{t('User group top-up ratios')}</FormLabel>
                   <FormControl>
                     <JsonCodeEditor
                       value={field.value}
@@ -274,9 +282,33 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'Optional multiplier per user group used when calculating recharge pricing. Provide a JSON object such as'
+                      'Optional multiplier per user group applied when calculating recharge pricing. Provide a JSON object such as'
                     )}
                     {` { "default": 1, "vip": 1.2 }`}.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name='UserGroups'
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>{t('User groups')}</FormLabel>
+                  <FormControl>
+                    <JsonCodeEditor
+                      value={field.value}
+                      onChange={field.onChange}
+                      name={field.name}
+                      onBlur={field.onBlur}
+                      textareaRef={field.ref}
+                      heightClassName='h-40 min-h-40 max-h-40'
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    {t('JSON map of user group → description.')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -288,7 +320,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
               name='UserUsableGroups'
               render={({ field }) => (
                 <FormItem>
-                  <FormLabel>{t('Selectable groups')}</FormLabel>
+                  <FormLabel>{t('Selectable channel groups')}</FormLabel>
                   <FormControl>
                     <JsonCodeEditor
                       value={field.value}
@@ -301,7 +333,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                   </FormControl>
                   <FormDescription>
                     {t(
-                      'JSON map of group → description exposed when users create API keys.'
+                      'JSON map of channel group → description exposed when users create API keys.'
                     )}
                   </FormDescription>
                   <FormMessage />
@@ -325,11 +357,7 @@ export const GroupRatioForm = memo(function GroupRatioForm({
                     />
                   </FormControl>
                   <FormDescription>
-                    {t('Nested JSON: source group →')}{' '}
-                    {`{ targetGroup: ratio }`}{' '}
-                    {t(
-                      'to override billing when a user in one group uses a token of another group.'
-                    )}
+                    {t('JSON map of user group → channel group → ratio.')}
                   </FormDescription>
                   <FormMessage />
                 </FormItem>
@@ -492,12 +520,12 @@ function GroupPricingGuide({ open, onOpenChange }: GroupPricingGuideProps) {
         <div className={sideDrawerFormClassName('gap-5')}>
           <section className='space-y-2'>
             <h3 className='text-sm font-semibold'>
-              {t('The two roles of a group')}
+              {t('Separate user and channel groups')}
             </h3>
             <div className='text-muted-foreground space-y-2 text-sm leading-6'>
               <p>
                 {t(
-                  'Every group name in the pricing table can be used in two places: on a user (the user group, assigned by admins) and on a token (the token group, chosen when creating the token). Same name pool, two different jobs.'
+                  'User groups and channel groups have separate directories and are configured in different sections. The same name can exist in both, but their settings are independent.'
                 )}
               </p>
               <p>

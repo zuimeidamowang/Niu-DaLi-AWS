@@ -33,10 +33,12 @@ import { z } from 'zod'
 import { SettingsPageProvider } from '../../components/settings-page-context'
 import { positiveIntegerSchema } from '../../utils/numeric-field'
 import { GroupRatioForm } from '../group-ratio-form'
+import { migrateLegacyUserGroupVisibility } from '../group-visibility-migration'
 
 const defaults = {
   GroupRatio: '{"default":1,"vip":0.8}',
   TopupGroupRatio: '{"vip":1.2}',
+  UserGroups: '{"default":"Standard account","vip":"Premium account"}',
   UserUsableGroups: '{"default":"Standard access","vip":"Premium access"}',
   GroupGroupRatio: '{}',
   AutoGroups: '["default","vip"]',
@@ -48,6 +50,7 @@ const defaults = {
 const schema = z.object({
   GroupRatio: z.string(),
   TopupGroupRatio: z.string(),
+  UserGroups: z.string(),
   UserUsableGroups: z.string(),
   GroupGroupRatio: z.string(),
   AutoGroups: z.string(),
@@ -59,6 +62,7 @@ const schema = z.object({
 function Fixture(props: {
   onSave?: (values: typeof defaults) => Promise<void>
   initial?: Partial<typeof defaults>
+  legacyUserGroupNames?: string[]
   isSaving?: boolean
 }) {
   const [actions, setActions] = useState<HTMLDivElement | null>(null)
@@ -71,6 +75,7 @@ function Fixture(props: {
       <div ref={setActions} />
       <GroupRatioForm
         form={form}
+        legacyUserGroupNames={props.legacyUserGroupNames ?? []}
         onSave={props.onSave ?? (async () => {})}
         isSaving={props.isSaving ?? false}
       />
@@ -82,65 +87,230 @@ describe('group settings workspace', () => {
   it('filters by description and clears search without discarding edits', async () => {
     const user = userEvent.setup()
     render(<Fixture />)
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
     const search = screen.getByRole('textbox', {
       name: 'Search groups by name or description',
     })
     await user.type(search, 'PREMIUM')
-    expect(screen.getAllByRole('textbox', { name: 'Group name' })).toHaveLength(
-      1
+    expect(
+      screen.getAllByRole('textbox', { name: 'User group name' })
+    ).toHaveLength(1)
+    expect(
+      screen.getByRole('textbox', { name: 'User group name' })
+    ).toHaveValue('vip')
+    await user.clear(screen.getByRole('spinbutton', { name: 'Top-up ratio' }))
+    await user.type(
+      screen.getByRole('spinbutton', { name: 'Top-up ratio' }),
+      '0.6'
     )
-    expect(screen.getByRole('textbox', { name: 'Group name' })).toHaveValue(
-      'vip'
-    )
-    await user.clear(screen.getByRole('spinbutton', { name: 'Ratio' }))
-    await user.type(screen.getByRole('spinbutton', { name: 'Ratio' }), '0.6')
     await user.click(screen.getByRole('button', { name: 'Clear search' }))
-    expect(screen.getAllByRole('textbox', { name: 'Group name' })).toHaveLength(
-      2
-    )
-    expect(screen.getAllByRole('spinbutton', { name: 'Ratio' })[1]).toHaveValue(
-      0.6
-    )
+    expect(
+      screen.getAllByRole('textbox', { name: 'User group name' })
+    ).toHaveLength(2)
+    expect(
+      screen.getAllByRole('spinbutton', { name: 'Top-up ratio' })[1]
+    ).toHaveValue(0.6)
     await user.type(search, 'missing')
     expect(screen.getByText('No results found')).toBeVisible()
-    await user.click(screen.getByRole('button', { name: 'Add group' }))
+    await user.click(screen.getByRole('button', { name: 'Add user group' }))
     expect(search).toHaveValue('')
-    expect(screen.getByDisplayValue('group_1')).toBeVisible()
+    expect(screen.getByDisplayValue('user_group_1')).toBeVisible()
   })
 
-  it('keeps unfinished visibility rules while switching sections and supports keyboard tabs', async () => {
+  it('keeps the default group fixed and blocks saving duplicate names', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
+
+    const groupNames = screen.getAllByRole('textbox', {
+      name: 'User group name',
+    })
+    const secondGroupName = groupNames[1]
+    if (!secondGroupName) throw new Error('Expected an editable user group')
+    expect(groupNames[0]).toBeDisabled()
+    await user.clear(secondGroupName)
+    await user.type(secondGroupName, 'default')
+
+    expect(screen.getByText('Duplicate group names: default')).toBeVisible()
+    const saveButton = screen.getByRole('button', {
+      name: 'Save group settings',
+    })
+    expect(saveButton).toBeDisabled()
+    expect(onSave).not.toHaveBeenCalled()
+
+    await user.clear(secondGroupName)
+    await user.type(secondGroupName, 'vip')
+    expect(saveButton).toBeEnabled()
+    await user.click(saveButton)
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+  })
+
+  it('blocks saving a user group with a blank name', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
+
+    const groupNames = screen.getAllByRole('textbox', {
+      name: 'User group name',
+    })
+    const secondGroupName = groupNames[1]
+    if (!secondGroupName) throw new Error('Expected an editable user group')
+    await user.clear(secondGroupName)
+
+    const saveButton = screen.getByRole('button', {
+      name: 'Save group settings',
+    })
+    expect(saveButton).toBeDisabled()
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('blocks reserved and overlong user group names but accepts the length limit', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
+
+    const groupName = screen.getAllByRole('textbox', {
+      name: 'User group name',
+    })[1]
+    if (!groupName) throw new Error('Expected an editable user group')
+    const saveButton = screen.getByRole('button', {
+      name: 'Save group settings',
+    })
+
+    fireEvent.change(groupName, { target: { value: 'auto' } })
+    expect(
+      screen.getByText('The user group name "auto" is reserved.')
+    ).toBeVisible()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(groupName, { target: { value: 'a'.repeat(65) } })
+    expect(
+      screen.getByText('User group names must be 64 characters or fewer.')
+    ).toBeVisible()
+    expect(saveButton).toBeDisabled()
+
+    fireEvent.change(groupName, { target: { value: 'a'.repeat(64) } })
+    expect(saveButton).toBeEnabled()
+    await user.click(saveButton)
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+  })
+
+  it('blocks negative top-up ratios while allowing zero', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
+
+    const ratios = screen.getAllByRole('spinbutton', { name: 'Top-up ratio' })
+    const ratio = ratios[1]
+    if (!ratio) throw new Error('Expected an editable top-up ratio')
+    fireEvent.change(ratio, { target: { value: '-0.5' } })
+    expect(
+      screen.getByText('Top-up ratio must be zero or greater')
+    ).toBeVisible()
+    const saveButton = screen.getByRole('button', {
+      name: 'Save group settings',
+    })
+    expect(saveButton).toBeDisabled()
+    expect(onSave).not.toHaveBeenCalled()
+
+    fireEvent.change(ratio, { target: { value: '0' } })
+    expect(saveButton).toBeEnabled()
+    await user.click(saveButton)
+    await waitFor(() => expect(onSave).toHaveBeenCalled())
+  })
+
+  it('adds legacy user group names when the directory request finishes', async () => {
+    const initial = { UserGroups: '{"default":"Standard account"}' }
+    const view = render(<Fixture initial={initial} legacyUserGroupNames={[]} />)
+    await userEvent
+      .setup()
+      .click(screen.getByRole('tab', { name: 'User groups' }))
+    expect(
+      screen.getAllByRole('textbox', { name: 'User group name' })
+    ).toHaveLength(1)
+
+    view.rerender(
+      <Fixture initial={initial} legacyUserGroupNames={['old_user_group']} />
+    )
+
+    expect(await screen.findByDisplayValue('old_user_group')).toBeVisible()
+  })
+
+  it('keeps visibility rules in user groups and separates their source and target options', async () => {
     const user = userEvent.setup()
     render(
       <Fixture
         initial={{
+          GroupRatio: '{"default":1,"vip":0.8,"channel_only":0.5}',
+          UserGroups:
+            '{"default":"Standard account","vip":"Premium account","user_only":"Enterprise account"}',
           GroupSpecialUsableGroup: '{"vip":{"+:default":"Standard"}}',
         }}
       />
     )
-    const pricing = screen.getByRole('tab', { name: 'Pricing groups' })
-    pricing.focus()
-    await user.keyboard('{ArrowRight}{Enter}')
-    expect(
-      screen.getByRole('tab', { name: 'Special ratio rules' })
-    ).toHaveAttribute('aria-selected', 'true')
-    expect(
-      screen.queryByRole('table', { name: 'Pricing groups' })
-    ).not.toBeInTheDocument()
-    await user.click(screen.getByRole('tab', { name: 'Group visibility' }))
+    await user.click(screen.getByRole('tab', { name: 'User groups' }))
     await user.click(screen.getByRole('button', { name: 'Add rule' }))
+    const channelGroupSelect = screen.getAllByRole('combobox', {
+      name: 'Channel group',
+    })[1]
+    await user.click(channelGroupSelect)
+    expect(screen.getByRole('option', { name: 'channel_only' })).toBeVisible()
     expect(
-      screen.getAllByRole('combobox', { name: 'Group name' })
-    ).toHaveLength(2)
-    await user.click(pricing)
-    await user.click(screen.getByRole('tab', { name: 'Group visibility' }))
+      screen.queryByRole('option', { name: 'user_only' })
+    ).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
+    const addUserGroupSelect = screen.getByRole('combobox', {
+      name: 'Add rules for a user group',
+    })
+    await user.click(addUserGroupSelect)
+    expect(screen.getByRole('option', { name: 'user_only' })).toBeVisible()
     expect(
-      screen.getAllByRole('combobox', { name: 'Group name' })
-    ).toHaveLength(2)
+      screen.queryByRole('option', { name: 'channel_only' })
+    ).not.toBeInTheDocument()
+    await user.keyboard('{Escape}')
+
     const toggle = screen.getByRole('button', { name: 'Rules for vip' })
     await user.click(toggle)
     expect(toggle).toHaveAttribute('aria-expanded', 'false')
     await user.click(screen.getByRole('button', { name: 'Add rule' }))
     expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  })
+
+  it('adds legacy same-name channel visibility without overriding explicit rules', () => {
+    const migrated = migrateLegacyUserGroupVisibility({
+      legacyCompatibility: true,
+      legacyUserGroupNames: ['vip', 'default'],
+      userGroups: '{"vip":"Premium","default":"Standard"}',
+      groupRatio: '{"default":1,"vip":0.8}',
+      userUsableGroups: '{}',
+      groupSpecialUsableGroup:
+        '{"vip":{"+:premium":"Premium"},"default":{"-:default":"remove"}}',
+    })
+
+    expect(JSON.parse(migrated ?? '{}')).toEqual({
+      vip: { '+:premium': 'Premium', '+:vip': '用户分组' },
+      default: { '-:default': 'remove' },
+    })
+  })
+
+  it('does not restore a deleted legacy user group during visibility migration', () => {
+    const migrated = migrateLegacyUserGroupVisibility({
+      legacyCompatibility: true,
+      legacyUserGroupNames: ['retired', 'vip'],
+      userGroups: '{"vip":"Premium"}',
+      groupRatio: '{"retired":0.5,"vip":0.8}',
+      userUsableGroups: '{}',
+      groupSpecialUsableGroup: '{}',
+    })
+
+    expect(JSON.parse(migrated ?? '{}')).toEqual({
+      vip: { '+:vip': '用户分组' },
+    })
   })
 
   it('reorders and removes auto groups with named controls and saves across sections', async () => {
@@ -162,7 +332,9 @@ describe('group settings workspace', () => {
     expect(screen.getByRole('button', { name: 'Move vip up' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move vip down' })).toBeDisabled()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(onSave.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
@@ -205,7 +377,9 @@ describe('group settings workspace', () => {
     )
     expect(screen.getByText('Not in pricing table')).toBeVisible()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(JSON.parse(onSave.mock.calls[0][0].AutoGroups)).toEqual([
       'vip',
@@ -247,7 +421,9 @@ describe('group settings workspace', () => {
       { target: { value: '0' } }
     )
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() =>
       expect(
         screen.getByRole('tab', { name: 'Auto group order' })

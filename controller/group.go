@@ -23,6 +23,15 @@ func GetGroups(c *gin.Context) {
 	})
 }
 
+func GetUserGroupNames(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"success":              true,
+		"message":              "",
+		"data":                 service.GetUserGroupNames(),
+		"legacy_compatibility": !setting.UserGroupsConfigured(),
+	})
+}
+
 func GetUserGroups(c *gin.Context) {
 	usableGroups := make(map[string]map[string]any)
 	userGroup := ""

@@ -61,6 +61,7 @@ interface MobileCardListProps<TData> {
   emptyDescription?: string
   getRowKey?: (row: Row<TData>) => string | number
   getRowClassName?: (row: Row<TData>) => string | undefined
+  renderRow?: (row: Row<TData>, defaultCard: React.ReactNode) => React.ReactNode
 }
 
 function ListSkeleton() {
@@ -124,6 +125,7 @@ export function MobileCardList<TData>(props: MobileCardListProps<TData>) {
     emptyDescription,
     getRowKey,
     getRowClassName,
+    renderRow,
   } = props
   const { t } = useTranslation()
 
@@ -175,7 +177,7 @@ export function MobileCardList<TData>(props: MobileCardListProps<TData>) {
       )}
       {rows.map((row) => {
         const key = getRowKey ? getRowKey(row) : row.id
-        return (
+        const card = (
           <div
             key={key}
             className={cn(
@@ -202,6 +204,7 @@ export function MobileCardList<TData>(props: MobileCardListProps<TData>) {
             </div>
           </div>
         )
+        return renderRow ? renderRow(row, card) : card
       })}
     </div>
   )

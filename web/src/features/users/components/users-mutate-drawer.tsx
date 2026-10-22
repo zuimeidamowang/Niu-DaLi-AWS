@@ -64,6 +64,10 @@ import {
 } from '@/components/ui/sheet'
 import { Textarea } from '@/components/ui/textarea'
 import {
+  SecureVerificationDialog,
+  useSecureVerification,
+} from '@/features/auth/secure-verification'
+import {
   ADMIN_PERMISSION_ACTIONS,
   ADMIN_PERMISSION_RESOURCES,
   EMPTY_PERMISSION_CATALOG,
@@ -82,10 +86,15 @@ import {
   createUser,
   updateUser,
   getUser,
-  getGroups,
+  getUserGroupNames,
   getPermissionCatalog,
 } from '../api'
-import { BINDING_FIELDS, ERROR_MESSAGES, SUCCESS_MESSAGES } from '../constants'
+import {
+  BINDING_FIELDS,
+  ERROR_MESSAGES,
+  SUCCESS_MESSAGES,
+  USER_ROLE,
+} from '../constants'
 import {
   userFormSchema,
   type UserFormValues,
@@ -93,6 +102,11 @@ import {
   transformFormDataToPayload,
   transformUserToFormDefaults,
 } from '../lib'
+import {
+  canManageUser,
+  canViewUser,
+  isDelegatedUserManager,
+} from '../lib/user-actions'
 import type { User } from '../types'
 import { UserQuotaDialog } from './user-quota-dialog'
 import { useUsers } from './users-provider'
@@ -112,23 +126,44 @@ export function UsersMutateDrawer({
   const isUpdate = !!currentRow
   const { triggerRefresh } = useUsers()
   const currentUser = useAuthStore((s) => s.auth.user)
+  const isUserManager = currentUser?.role === ROLE.USER_MANAGER
+  const isThirdLevelUser = currentUser?.role === ROLE.THIRD_LEVEL_USER
+  const hasAdminAccess = (currentUser?.role ?? 0) >= ROLE.ADMIN
+  const isDelegatedManager = isDelegatedUserManager(currentUser?.role)
+  const [groupInherited, setGroupInherited] = useState(
+    currentRow?.group_inherited ?? false
+  )
+  const canEditUser =
+    (currentUser?.role ?? 0) >= ROLE.USER_MANAGER &&
+    (!currentRow || canManageUser(currentUser, currentRow))
+  const canViewCurrentUser = !currentRow || canViewUser(currentUser, currentRow)
+  const isReadOnly = !!currentRow && canViewCurrentUser && !canEditUser
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [quotaDialogOpen, setQuotaDialogOpen] = useState(false)
+  const verification = useSecureVerification()
+  const cancelVerification = verification.cancel
+  useEffect(() => {
+    if (!open) cancelVerification()
+  }, [open, cancelVerification])
 
   // Fetch groups
   const { data: groupsData } = useQuery({
-    queryKey: ['groups'],
-    queryFn: async () => requireServerSuccess(await getGroups()),
+    queryKey: ['admin-user-group-names'],
+    queryFn: async () => requireServerSuccess(await getUserGroupNames()),
     staleTime: 5 * 60 * 1000,
+    enabled: open && (currentUser?.role ?? 0) >= ROLE.ADMIN,
   })
 
-  const groups = groupsData?.data || []
+  const userGroups = isDelegatedManager
+    ? [currentUser?.group || 'default']
+    : groupsData?.data || []
 
   // Permission catalog is owned by the backend; fetched once and reused.
   const { data: permissionCatalog = EMPTY_PERMISSION_CATALOG } = useQuery({
     queryKey: ['admin-permission-catalog'],
     queryFn: async () => requireServerSuccess(await getPermissionCatalog()),
     staleTime: 5 * 60 * 1000,
+    enabled: open && currentUser?.role === ROLE.SUPER_ADMIN,
   })
 
   const form = useForm<UserFormValues>({
@@ -138,22 +173,32 @@ export function UsersMutateDrawer({
 
   // Load existing data when updating
   useEffect(() => {
-    if (open && isUpdate && currentRow) {
+    let cancelled = false
+    if (open && isUpdate && currentRow && canViewCurrentUser) {
+      setGroupInherited(currentRow.group_inherited ?? false)
       // For update, fetch fresh data
       getUser(currentRow.id)
         .then((result) => {
+          if (cancelled) return
           if (result.success && result.data) {
+            setGroupInherited(result.data.group_inherited ?? false)
             form.reset(transformUserToFormDefaults(result.data))
           } else {
             handleServerError(result, t('Failed to load'))
           }
         })
-        .catch((error) => handleServerError(error, t('Failed to load')))
+        .catch(
+          (error) => !cancelled && handleServerError(error, t('Failed to load'))
+        )
     } else if (open && !isUpdate) {
+      setGroupInherited(false)
       // For create, reset to defaults
       form.reset(USER_FORM_DEFAULT_VALUES)
     }
-  }, [open, isUpdate, currentRow, form, t])
+    return () => {
+      cancelled = true
+    }
+  }, [open, isUpdate, currentRow, canViewCurrentUser, form, t])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -161,10 +206,57 @@ export function UsersMutateDrawer({
 
   const currentQuotaRaw = form.watch('quota_dollars') || 0
   const selectedRole = form.watch('role')
-  const canEditAdminPermissions = currentUser?.role === ROLE.SUPER_ADMIN
+  const selectedUserGroup = form.watch('group')
+  const userGroupOptions = [...userGroups]
+  if (
+    !isDelegatedManager &&
+    selectedUserGroup &&
+    !userGroupOptions.includes(selectedUserGroup)
+  ) {
+    userGroupOptions.push(selectedUserGroup)
+  }
+  const canEditAdminPermissions =
+    currentUser?.role === ROLE.SUPER_ADMIN && !isReadOnly
   const targetIsAdmin = (selectedRole ?? currentRow?.role ?? 0) >= ROLE.ADMIN
+  const commonRoleOption = {
+    value: String(USER_ROLE.USER),
+    label: t('Common User'),
+  }
+  const managerRoleOption = {
+    value: String(USER_ROLE.USER_MANAGER),
+    label: t('User Manager'),
+  }
+  const thirdLevelRoleOption = {
+    value: String(USER_ROLE.THIRD_LEVEL_USER),
+    label: t('Third-level User'),
+  }
+  const adminRoleOption = {
+    value: String(USER_ROLE.ADMIN),
+    label: t('Admin'),
+  }
+  let createRoleOptions = [
+    commonRoleOption,
+    managerRoleOption,
+    thirdLevelRoleOption,
+  ]
+  if (isThirdLevelUser) {
+    createRoleOptions = [commonRoleOption, managerRoleOption]
+  } else if (isUserManager) {
+    createRoleOptions = [commonRoleOption]
+  } else if (currentUser?.role === ROLE.SUPER_ADMIN) {
+    createRoleOptions = [...createRoleOptions, adminRoleOption]
+  }
+  let drawerTitle = `${t(isUpdate ? 'Update' : 'Create')} ${t('User')}`
+  let drawerDescription = isUpdate
+    ? t('Update the user by providing necessary info.')
+    : t('Add a new user by providing necessary info.')
+  if (isReadOnly) {
+    drawerTitle = t('View details')
+    drawerDescription = t('Details')
+  }
 
   const onSubmit = async (data: UserFormValues) => {
+    if (!canEditUser) return
     if (!isUpdate || data.password) {
       if (!accountPasswordSchema.safeParse(data.password ?? '').success) {
         form.setError('password', {
@@ -177,13 +269,34 @@ export function UsersMutateDrawer({
 
     setIsSubmitting(true)
     try {
+      let proofToken: string | undefined
+      if (isDelegatedManager && currentRow && data.password) {
+        const proof = await verification.requestVerification({
+          scope: 'user.password.reset',
+          context: { target_user_id: currentRow.id },
+        })
+        if (!proof) return
+        proofToken = proof.proof_token
+      }
       const payload = transformFormDataToPayload(
         data,
         currentRow?.id,
-        permissionCatalog
+        canEditAdminPermissions ? permissionCatalog : undefined
       )
+      if (isDelegatedManager) {
+        if (!isUpdate) {
+          payload.role =
+            isThirdLevelUser && data.role === USER_ROLE.USER_MANAGER
+              ? USER_ROLE.USER_MANAGER
+              : ROLE.USER
+        }
+        delete payload.group
+      }
       const result = isUpdate
-        ? await updateUser(payload as typeof payload & { id: number })
+        ? await updateUser(
+            payload as typeof payload & { id: number },
+            proofToken
+          )
         : await createUser(payload)
 
       if (result.success) {
@@ -220,7 +333,7 @@ export function UsersMutateDrawer({
   return (
     <>
       <Sheet
-        open={open}
+        open={open && !verification.isActive}
         onOpenChange={(v) => {
           onOpenChange(v)
           if (!v) {
@@ -232,14 +345,15 @@ export function UsersMutateDrawer({
           className={sideDrawerContentClassName('sm:max-w-[600px]')}
         >
           <SheetHeader className={sideDrawerHeaderClassName()}>
-            <SheetTitle>
-              {isUpdate ? t('Update') : t('Create')} {t('User')}
-            </SheetTitle>
-            <SheetDescription>
-              {isUpdate
-                ? t('Update the user by providing necessary info.')
-                : t('Add a new user by providing necessary info.')}
-            </SheetDescription>
+            <SheetTitle>{drawerTitle}</SheetTitle>
+            <SheetDescription>{drawerDescription}</SheetDescription>
+            {isDelegatedManager && !isUpdate && (
+              <p className='text-muted-foreground text-sm'>
+                {t(
+                  'New users belong to you, inherit your group, and start with zero quota.'
+                )}
+              </p>
+            )}
           </SheetHeader>
           <Form {...form}>
             <form
@@ -271,7 +385,7 @@ export function UsersMutateDrawer({
                   )}
                 />
 
-                {!isUpdate && (
+                {!isUpdate && !isUserManager && (
                   <FormField
                     control={form.control}
                     name='role'
@@ -279,10 +393,7 @@ export function UsersMutateDrawer({
                       <FormItem>
                         <FormLabel>{t('Role')}</FormLabel>
                         <Select
-                          items={[
-                            { value: '1', label: t('Common User') },
-                            { value: '10', label: t('Admin') },
-                          ]}
+                          items={createRoleOptions}
                           onValueChange={(value) =>
                             value !== null &&
                             field.onChange(Number.parseInt(value))
@@ -296,10 +407,14 @@ export function UsersMutateDrawer({
                           </FormControl>
                           <SelectContent alignItemWithTrigger={false}>
                             <SelectGroup>
-                              <SelectItem value='1'>
-                                {t('Common User')}
-                              </SelectItem>
-                              <SelectItem value='10'>{t('Admin')}</SelectItem>
+                              {createRoleOptions.map((option) => (
+                                <SelectItem
+                                  key={option.value}
+                                  value={option.value}
+                                >
+                                  {option.label}
+                                </SelectItem>
+                              ))}
                             </SelectGroup>
                           </SelectContent>
                         </Select>
@@ -322,6 +437,7 @@ export function UsersMutateDrawer({
                         <Input
                           {...field}
                           placeholder={t('Enter display name')}
+                          disabled={isReadOnly}
                         />
                       </FormControl>
                       <FormDescription>
@@ -332,27 +448,29 @@ export function UsersMutateDrawer({
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name='password'
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>{t('Password')}</FormLabel>
-                      <FormControl>
-                        <Input
-                          {...field}
-                          type='password'
-                          placeholder={
-                            isUpdate
-                              ? t('Leave empty to keep unchanged')
-                              : t('Enter password (8–128 characters)')
-                          }
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                {!isReadOnly && (!isUpdate || !hasAdminAccess) && (
+                  <FormField
+                    control={form.control}
+                    name='password'
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>{t('Password')}</FormLabel>
+                        <FormControl>
+                          <Input
+                            {...field}
+                            type='password'
+                            placeholder={
+                              isUpdate
+                                ? t('Leave empty to keep unchanged')
+                                : t('Enter password (8–128 characters)')
+                            }
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
               </SideDrawerSection>
 
               {/* Group & Quota Settings (Update only) */}
@@ -368,16 +486,24 @@ export function UsersMutateDrawer({
                         <FormLabel>{t('Group')}</FormLabel>
                         <FormControl>
                           <Combobox
-                            options={groups.map((group) => ({
+                            options={userGroupOptions.map((group) => ({
                               value: group,
                               label: group,
                             }))}
                             onValueChange={field.onChange}
                             value={field.value}
+                            disabled={
+                              isDelegatedManager || isReadOnly || groupInherited
+                            }
                             className='w-full'
                             placeholder={t('Select a group')}
                           />
                         </FormControl>
+                        {groupInherited && (
+                          <FormDescription>
+                            {t('Group is inherited from the third-level user.')}
+                          </FormDescription>
+                        )}
                         <FormMessage />
                       </FormItem>
                     )}
@@ -405,14 +531,16 @@ export function UsersMutateDrawer({
                               className='flex-1'
                             />
                           </FormControl>
-                          <Button
-                            type='button'
-                            variant='outline'
-                            onClick={() => setQuotaDialogOpen(true)}
-                          >
-                            <Pencil className='mr-1 h-4 w-4' />
-                            {t('Adjust Quota')}
-                          </Button>
+                          {canEditUser && (
+                            <Button
+                              type='button'
+                              variant='outline'
+                              onClick={() => setQuotaDialogOpen(true)}
+                            >
+                              <Pencil className='mr-1 h-4 w-4' />
+                              {t('Adjust Quota')}
+                            </Button>
+                          )}
                         </div>
                         <FormDescription>
                           {formatQuota(parseQuotaFromDollars(field.value || 0))}
@@ -435,6 +563,7 @@ export function UsersMutateDrawer({
                               'Admin notes (only visible to admins)'
                             )}
                             rows={3}
+                            disabled={isReadOnly}
                           />
                         </FormControl>
                         <FormMessage />
@@ -536,7 +665,7 @@ export function UsersMutateDrawer({
                 )}
 
               {/* Binding Information (Read-only) */}
-              {isUpdate && (
+              {isUpdate && !isDelegatedManager && (
                 <SideDrawerSection>
                   <h3 className='text-sm font-medium'>
                     {t('Binding Information')}
@@ -571,15 +700,18 @@ export function UsersMutateDrawer({
             <SheetClose render={<Button variant='outline' />}>
               {t('Close')}
             </SheetClose>
-            <Button form='user-form' type='submit' disabled={isSubmitting}>
-              {isSubmitting ? t('Saving...') : t('Save changes')}
-            </Button>
+            {canEditUser && (
+              <Button form='user-form' type='submit' disabled={isSubmitting}>
+                {isSubmitting ? t('Saving...') : t('Save changes')}
+              </Button>
+            )}
           </SheetFooter>
         </SheetContent>
       </Sheet>
+      <SecureVerificationDialog {...verification.dialogProps} />
 
       {/* Adjust Quota Dialog */}
-      {currentRow && (
+      {currentRow && canEditUser && (
         <UserQuotaDialog
           open={quotaDialogOpen}
           onOpenChange={setQuotaDialogOpen}

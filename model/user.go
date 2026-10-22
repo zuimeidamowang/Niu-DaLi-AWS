@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -103,6 +104,9 @@ type User struct {
 	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
 	AffHistoryQuota      int                        `json:"aff_history_quota" gorm:"type:int;default:0;column:aff_history"` // 邀请历史额度
 	InviterId            int                        `json:"inviter_id" gorm:"type:int;column:inviter_id;index"`
+	CreatorID            int                        `json:"creator_id" gorm:"not null;default:0;index"`
+	GroupInherited       bool                       `json:"group_inherited" gorm:"-"`
+	HierarchyAutoExpand  bool                       `json:"hierarchy_auto_expand,omitempty" gorm:"-"`
 	DeletedAt            gorm.DeletedAt             `gorm:"index"`
 	LinuxDOId            string                     `json:"linux_do_id" gorm:"column:linux_do_id;index"`
 	Setting              string                     `json:"setting" gorm:"type:text;column:setting"`
@@ -264,7 +268,9 @@ func generateDefaultSidebarConfigForRole(userRole int) string {
 	}
 
 	// 管理员区域 - 根据角色决定
-	if userRole == common.RoleAdminUser {
+	if common.IsDelegatedUserManager(userRole) {
+		defaultConfig["admin"] = map[string]any{"enabled": true, "user": true}
+	} else if userRole == common.RoleAdminUser {
 		// 管理员可以访问管理员区域，但不能访问系统设置
 		defaultConfig["admin"] = map[string]any{
 			"enabled":    true,
@@ -414,73 +420,385 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
-func GetAllUsers(pageInfo *common.PageInfo, sortOptions ...UserSortOptions) (users []*User, total int64, err error) {
-	// Start transaction
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return nil, 0, tx.Error
+// UserManagementScope binds management rights to the authenticated operator.
+// Ownership is immutable and is checked together with the target's current role.
+type UserManagementScope struct {
+	OperatorID   int
+	OperatorRole int
+}
+
+var ErrUserManagementPermission = errors.New("cannot manage this user")
+var ErrManagedUserHasChildren = errors.New("cannot delete a user who still has managed users")
+var ErrInheritedUserGroup = errors.New("user group is inherited from a third-level user")
+
+func (scope UserManagementScope) delegatedTargetRoles() []int {
+	switch scope.OperatorRole {
+	case common.RoleUserManager:
+		return []int{common.RoleCommonUser}
+	case common.RoleThirdLevelUser:
+		return []int{common.RoleCommonUser, common.RoleUserManager}
+	default:
+		return nil
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
+}
+
+func (scope UserManagementScope) Apply(query *gorm.DB) *gorm.DB {
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		if scope.OperatorID <= 0 {
+			return query.Where("1 = 0")
 		}
-	}()
-
-	// Get total count within transaction
-	err = tx.Unscoped().Model(&User{}).Count(&total).Error
-	if err != nil {
-		tx.Rollback()
-		return nil, 0, err
+		return query.Where("creator_id = ? AND role IN ?", scope.OperatorID, scope.delegatedTargetRoles())
 	}
-
-	// Get paginated users within same transaction
-	order := resolveUserSortOptions(sortOptions)
-	err = order.Apply(tx.Unscoped()).Limit(pageInfo.GetPageSize()).Offset(pageInfo.GetStartIdx()).Omit("password", "access_token").Find(&users).Error
-	if err != nil {
-		tx.Rollback()
-		return nil, 0, err
+	if scope.OperatorRole < common.RoleAdminUser {
+		return query.Where("1 = 0")
 	}
+	return query
+}
 
-	// Commit transaction
-	if err = tx.Commit().Error; err != nil {
-		return nil, 0, err
+func (scope UserManagementScope) CanManage(user *User) bool {
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		return scope.OperatorID > 0 && user.CreatorID == scope.OperatorID && slices.Contains(scope.delegatedTargetRoles(), user.Role)
 	}
+	return scope.OperatorRole == common.RoleRootUser || (scope.OperatorRole >= common.RoleAdminUser && scope.OperatorRole > user.Role)
+}
 
-	return users, total, nil
+func (scope UserManagementScope) CanView(user *User) bool {
+	if scope.OperatorRole >= common.RoleAdminUser {
+		return true
+	}
+	return scope.CanManage(user)
+}
+
+func (scope UserManagementScope) CheckManagedDeletion(tx *gorm.DB, user *User) error {
+	if err := checkManagedUserHasChildren(tx, user); err != nil {
+		return err
+	}
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		return user.checkManagedDeletionBalance()
+	}
+	return nil
+}
+
+func checkManagedUserHasChildren(tx *gorm.DB, user *User) error {
+	if !common.IsDelegatedUserManager(user.Role) {
+		return nil
+	}
+	var childCount int64
+	if err := tx.Unscoped().Model(&User{}).Where("creator_id = ?", user.Id).Count(&childCount).Error; err != nil {
+		return err
+	}
+	if childCount > 0 {
+		return ErrManagedUserHasChildren
+	}
+	return nil
+}
+
+// CheckManagedUserHasActiveChildren prevents role changes that hide live descendants.
+func CheckManagedUserHasActiveChildren(tx *gorm.DB, userID int) error {
+	if tx == nil || userID <= 0 {
+		return errors.New("invalid managed user hierarchy check")
+	}
+	frontier := []int{userID}
+	seen := map[int]struct{}{userID: {}}
+	for len(frontier) > 0 {
+		var descendants []User
+		if err := tx.Unscoped().Select("id", "creator_id", "deleted_at").Where("creator_id IN ?", frontier).Order("id").Find(&descendants).Error; err != nil {
+			return err
+		}
+		frontier = frontier[:0]
+		for i := range descendants {
+			descendant := &descendants[i]
+			if _, ok := seen[descendant.Id]; ok {
+				continue
+			}
+			seen[descendant.Id] = struct{}{}
+			if !descendant.DeletedAt.Valid {
+				return ErrManagedUserHasChildren
+			}
+			frontier = append(frontier, descendant.Id)
+		}
+	}
+	return nil
+}
+
+// LockManagedUser rechecks both the operator and target inside the write
+// transaction. Ascending IDs match the wallet transfer lock order.
+func (scope UserManagementScope) LockManagedUser(tx *gorm.DB, userID int, unscoped bool) (*User, error) {
+	if userID <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		ids := []int{scope.OperatorID, userID}
+		slices.Sort(ids)
+		var operator, target User
+		for _, id := range ids {
+			var user User
+			query := lockForUpdate(tx)
+			if unscoped && id == userID {
+				query = query.Unscoped()
+			}
+			if err := query.First(&user, id).Error; err != nil {
+				return nil, err
+			}
+			if id == scope.OperatorID {
+				operator = user
+			} else {
+				target = user
+			}
+		}
+		if operator.Role != scope.OperatorRole || operator.Status != common.UserStatusEnabled || operator.DeletedAt.Valid || !scope.CanManage(&target) {
+			return nil, ErrUserManagementPermission
+		}
+		return &target, nil
+	}
+	var user User
+	query := lockForUpdate(tx)
+	if unscoped {
+		query = query.Unscoped()
+	}
+	if err := query.First(&user, userID).Error; err != nil {
+		return nil, err
+	}
+	if !scope.CanManage(&user) {
+		return nil, ErrUserManagementPermission
+	}
+	return &user, nil
+}
+
+func (scope UserManagementScope) InsertUser(tx *gorm.DB, user *User) error {
+	if common.IsDelegatedUserManager(scope.OperatorRole) {
+		var manager User
+		if err := tx.First(&manager, scope.OperatorID).Error; err != nil {
+			return err
+		}
+		lockIDs := []int{manager.Id}
+		if manager.CreatorID > 0 {
+			lockIDs = append(lockIDs, manager.CreatorID)
+		}
+		slices.Sort(lockIDs)
+		var ancestor User
+		for _, id := range lockIDs {
+			var locked User
+			if err := lockForUpdate(tx).First(&locked, id).Error; err != nil {
+				return err
+			}
+			if id == manager.Id {
+				manager = locked
+			} else {
+				ancestor = locked
+			}
+		}
+		if manager.Role != scope.OperatorRole || manager.Status != common.UserStatusEnabled || !slices.Contains(scope.delegatedTargetRoles(), user.Role) {
+			return ErrUserManagementPermission
+		}
+		if manager.CreatorID > 0 && ancestor.Role != common.RoleThirdLevelUser {
+			return ErrUserManagementPermission
+		}
+		user.CreatorID = manager.Id
+		user.Group = manager.Group
+	} else if scope.OperatorRole < common.RoleAdminUser || user.Role >= scope.OperatorRole {
+		return ErrUserManagementPermission
+	}
+	return user.InsertWithTx(tx, 0)
+}
+
+func GetAllUsers(pageInfo *common.PageInfo, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	return FindManagedUsers(UserManagementScope{OperatorRole: common.RoleRootUser}, "", "", nil, nil,
+		pageInfo.GetStartIdx(), pageInfo.GetPageSize(), sortOptions...)
 }
 
 func SearchUsers(keyword string, group string, role *int, status *int, startIdx int, num int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	return FindManagedUsers(UserManagementScope{OperatorRole: common.RoleRootUser}, keyword, group, role, status,
+		startIdx, num, sortOptions...)
+}
+
+func FindManagedUsers(scope UserManagementScope, keyword, group string, role, status *int, startIdx, num int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	return findManagedUsers(scope, 0, false, keyword, group, role, status, startIdx, num, sortOptions...)
+}
+
+func FindManagedUserTreeRoots(scope UserManagementScope, keyword, group string, role, status *int, startIdx, num int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	if scope.OperatorRole < common.RoleAdminUser || (keyword == "" && group == "" && role == nil && status == nil) {
+		return findManagedUsers(scope, 0, true, keyword, group, role, status, startIdx, num, sortOptions...)
+	}
 	var users []*User
 	var total int64
-	var err error
-
-	// 开始事务
-	tx := DB.Begin()
-	if tx.Error != nil {
-		return nil, 0, tx.Error
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		matches, err := findUsersMatchingFilters(tx, scope, keyword, group, role, status)
+		if err != nil {
+			return err
 		}
-	}()
+		rootExpand := make(map[int]bool)
+		ancestorCache := make(map[int]User)
+		for i := range matches {
+			path := []User{matches[i]}
+			current := matches[i]
+			seen := map[int]struct{}{current.Id: {}}
+			for !isManagedUserTreeRoot(current) && current.CreatorID > 0 {
+				if _, ok := seen[current.CreatorID]; ok {
+					break
+				}
+				seen[current.CreatorID] = struct{}{}
+				ancestor, ok := ancestorCache[current.CreatorID]
+				if !ok {
+					if err := tx.Unscoped().Select("id", "role", "creator_id").First(&ancestor, current.CreatorID).Error; err != nil {
+						if errors.Is(err, gorm.ErrRecordNotFound) {
+							break
+						}
+						return err
+					}
+					ancestorCache[ancestor.Id] = ancestor
+				}
+				path = append(path, ancestor)
+				current = ancestor
+			}
+			if !isManagedUserTreeRoot(current) {
+				continue
+			}
+			rootExpand[current.Id] = rootExpand[current.Id] || len(path) > 1
+		}
+		rootIDs := make([]int, 0, len(rootExpand))
+		for id := range rootExpand {
+			rootIDs = append(rootIDs, id)
+		}
+		query := scope.Apply(tx.Unscoped().Model(&User{})).Where("id IN ?", rootIDs)
+		if err := query.Count(&total).Error; err != nil {
+			return err
+		}
+		order := resolveUserSortOptions(sortOptions)
+		if err := order.Apply(query.Order("role DESC").Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error; err != nil {
+			return err
+		}
+		for i := range users {
+			users[i].HierarchyAutoExpand = rootExpand[users[i].Id]
+		}
+		return nil
+	})
+	return users, total, err
+}
 
-	// 构建基础查询
-	query := tx.Unscoped().Model(&User{})
-
-	// 构建搜索条件
-	likeCondition := "username LIKE ? OR email LIKE ? OR display_name LIKE ?"
-	likeArgs := []any{"%" + keyword + "%", "%" + keyword + "%", "%" + keyword + "%"}
-
-	// 尝试将关键字转换为整数ID
-	keywordInt, err := strconv.Atoi(keyword)
-	if err == nil {
-		// 如果是数字，同时搜索ID和其他字段
-		likeCondition = "id = ? OR " + likeCondition
-		likeArgs = append([]any{keywordInt}, likeArgs...)
+func FindManagedUserChildren(scope UserManagementScope, parentID int, keyword, group string, role, status *int, startIdx, num int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	if parentID <= 0 {
+		return nil, 0, gorm.ErrRecordNotFound
 	}
+	if scope.OperatorRole < common.RoleAdminUser || (keyword == "" && group == "" && role == nil && status == nil) {
+		return findManagedUsers(scope, parentID, false, keyword, group, role, status, startIdx, num, sortOptions...)
+	}
+	var users []*User
+	var total int64
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		matches, err := findUsersMatchingFilters(tx, scope, keyword, group, role, status)
+		if err != nil {
+			return err
+		}
+		childIDs := make(map[int]bool)
+		ancestorCache := make(map[int]User)
+		for i := range matches {
+			current := matches[i]
+			seen := map[int]struct{}{current.Id: {}}
+			for current.CreatorID > 0 {
+				if current.CreatorID == parentID {
+					childIDs[current.Id] = childIDs[current.Id] || current.Id != matches[i].Id
+					break
+				}
+				if _, ok := seen[current.CreatorID]; ok {
+					break
+				}
+				seen[current.CreatorID] = struct{}{}
+				ancestor, ok := ancestorCache[current.CreatorID]
+				if !ok {
+					if err := tx.Unscoped().Select("id", "role", "creator_id").First(&ancestor, current.CreatorID).Error; err != nil {
+						if errors.Is(err, gorm.ErrRecordNotFound) {
+							break
+						}
+						return err
+					}
+					ancestorCache[ancestor.Id] = ancestor
+				}
+				current = ancestor
+			}
+		}
+		childIDsList := make([]int, 0, len(childIDs))
+		for id := range childIDs {
+			childIDsList = append(childIDsList, id)
+		}
+		query := scope.Apply(tx.Unscoped().Model(&User{})).Where("creator_id = ? AND id IN ?", parentID, childIDsList)
+		if err := query.Count(&total).Error; err != nil {
+			return err
+		}
+		order := resolveUserSortOptions(sortOptions)
+		if err := order.Apply(query.Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error; err != nil {
+			return err
+		}
+		for i := range users {
+			users[i].HierarchyAutoExpand = childIDs[users[i].Id]
+		}
+		return setManagedUserGroupInheritance(tx, scope, parentID, users)
+	})
+	return users, total, err
+}
 
-	query = query.Where("("+likeCondition+")", likeArgs...)
+func findManagedUsers(scope UserManagementScope, parentID int, rootsOnly bool, keyword, group string, role, status *int, startIdx, num int, sortOptions ...UserSortOptions) ([]*User, int64, error) {
+	var users []*User
+	var total int64
+	err := DB.Transaction(func(tx *gorm.DB) error {
+		query := scope.Apply(tx.Unscoped().Model(&User{}))
+		if parentID > 0 {
+			query = query.Where("creator_id = ?", parentID)
+		} else if rootsOnly && scope.OperatorRole >= common.RoleAdminUser {
+			query = query.Where("(role IN ? OR creator_id = 0)", []int{common.RoleRootUser, common.RoleAdminUser, common.RoleThirdLevelUser})
+			query = query.Order("role DESC")
+		}
+		query = applyUserListFilters(query, keyword, group, role, status)
+		if err := query.Count(&total).Error; err != nil {
+			return err
+		}
+		order := resolveUserSortOptions(sortOptions)
+		if err := order.Apply(query.Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error; err != nil {
+			return err
+		}
+		if len(users) == 0 {
+			return nil
+		}
+		inherited := scope.OperatorRole == common.RoleThirdLevelUser
+		if scope.OperatorRole == common.RoleUserManager {
+			var err error
+			inherited, err = IsThirdLevelUserDescendantTx(tx, scope.OperatorID)
+			if err != nil {
+				return err
+			}
+		}
+		if parentID > 0 {
+			var parent User
+			if err := tx.Unscoped().Select("id", "role").First(&parent, parentID).Error; err != nil {
+				return err
+			}
+			inherited = parent.Role == common.RoleThirdLevelUser
+			if parent.Role == common.RoleUserManager {
+				var err error
+				inherited, err = IsThirdLevelUserDescendantTx(tx, parent.Id)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		for i := range users {
+			users[i].GroupInherited = inherited && (users[i].Role == common.RoleUserManager || users[i].Role == common.RoleCommonUser)
+		}
+		return nil
+	})
+	return users, total, err
+}
+
+func applyUserListFilters(query *gorm.DB, keyword, group string, role, status *int) *gorm.DB {
+	if keyword != "" {
+		likeCondition := "username LIKE ? OR email LIKE ? OR display_name LIKE ?"
+		likeArgs := []any{"%" + keyword + "%", "%" + keyword + "%", "%" + keyword + "%"}
+		if keywordInt, err := strconv.Atoi(keyword); err == nil {
+			likeCondition = "id = ? OR " + likeCondition
+			likeArgs = append([]any{keywordInt}, likeArgs...)
+		}
+		query = query.Where("("+likeCondition+")", likeArgs...)
+	}
 	if group != "" {
 		query = query.Where(commonGroupCol+" = ?", group)
 	}
@@ -494,28 +812,154 @@ func SearchUsers(keyword string, group string, role *int, status *int, startIdx 
 			query = query.Where("deleted_at IS NULL").Where("status = ?", *status)
 		}
 	}
+	return query
+}
 
-	// 获取总数
-	err = query.Count(&total).Error
-	if err != nil {
-		tx.Rollback()
-		return nil, 0, err
+func findUsersMatchingFilters(tx *gorm.DB, scope UserManagementScope, keyword, group string, role, status *int) ([]User, error) {
+	var users []User
+	query := applyUserListFilters(scope.Apply(tx.Unscoped().Model(&User{})), keyword, group, role, status)
+	err := query.Select("id", "role", "creator_id").Find(&users).Error
+	return users, err
+}
+
+func isManagedUserTreeRoot(user User) bool {
+	return user.CreatorID == 0 || user.Role == common.RoleRootUser || user.Role == common.RoleAdminUser || user.Role == common.RoleThirdLevelUser
+}
+
+func setManagedUserGroupInheritance(tx *gorm.DB, scope UserManagementScope, parentID int, users []*User) error {
+	if len(users) == 0 {
+		return nil
 	}
-
-	// 获取分页数据
-	order := resolveUserSortOptions(sortOptions)
-	err = order.Apply(query.Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error
-	if err != nil {
-		tx.Rollback()
-		return nil, 0, err
+	var parent User
+	if err := tx.Unscoped().Select("id", "role").First(&parent, parentID).Error; err != nil {
+		return err
 	}
-
-	// 提交事务
-	if err = tx.Commit().Error; err != nil {
-		return nil, 0, err
+	inherited := parent.Role == common.RoleThirdLevelUser
+	if parent.Role == common.RoleUserManager {
+		var err error
+		inherited, err = IsThirdLevelUserDescendantTx(tx, parent.Id)
+		if err != nil {
+			return err
+		}
 	}
+	for i := range users {
+		users[i].GroupInherited = inherited && (users[i].Role == common.RoleUserManager || users[i].Role == common.RoleCommonUser)
+	}
+	return nil
+}
 
-	return users, total, nil
+func IsThirdLevelUserDescendantTx(tx *gorm.DB, userID int) (bool, error) {
+	if tx == nil || userID <= 0 {
+		return false, nil
+	}
+	var user User
+	if err := tx.Unscoped().Select("id", "role", "creator_id").First(&user, userID).Error; err != nil {
+		return false, err
+	}
+	if user.Role != common.RoleUserManager && user.Role != common.RoleCommonUser {
+		return false, nil
+	}
+	return hasThirdLevelAncestorTx(tx, user.CreatorID)
+}
+
+func hasThirdLevelAncestorTx(tx *gorm.DB, ancestorID int) (bool, error) {
+	seen := make(map[int]struct{})
+	for ancestorID > 0 {
+		if _, ok := seen[ancestorID]; ok {
+			return false, nil
+		}
+		seen[ancestorID] = struct{}{}
+		var ancestor User
+		if err := tx.Unscoped().Select("id", "role", "creator_id").First(&ancestor, ancestorID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return false, nil
+			}
+			return false, err
+		}
+		if ancestor.Role == common.RoleThirdLevelUser {
+			return true, nil
+		}
+		ancestorID = ancestor.CreatorID
+	}
+	return false, nil
+}
+
+func IsThirdLevelUserDescendant(userID int) (bool, error) {
+	return IsThirdLevelUserDescendantTx(DB, userID)
+}
+
+func GetThirdLevelAncestorGroupTx(tx *gorm.DB, userID int) (string, bool, error) {
+	if tx == nil || userID <= 0 {
+		return "", false, nil
+	}
+	var user User
+	if err := tx.Unscoped().Select("id", "role", "creator_id").First(&user, userID).Error; err != nil {
+		return "", false, err
+	}
+	if user.Role != common.RoleUserManager && user.Role != common.RoleCommonUser {
+		return "", false, nil
+	}
+	seen := make(map[int]struct{})
+	for ancestorID := user.CreatorID; ancestorID > 0; {
+		if _, ok := seen[ancestorID]; ok {
+			return "", false, nil
+		}
+		seen[ancestorID] = struct{}{}
+		var ancestor User
+		if err := tx.Unscoped().Select("id", "role", "creator_id", "group").First(&ancestor, ancestorID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", false, nil
+			}
+			return "", false, err
+		}
+		if ancestor.Role == common.RoleThirdLevelUser {
+			return ancestor.Group, true, nil
+		}
+		ancestorID = ancestor.CreatorID
+	}
+	return "", false, nil
+}
+
+func UpdateThirdLevelUserDescendantGroupsTx(tx *gorm.DB, thirdLevelUserID int, group string) ([]int, error) {
+	if tx == nil || thirdLevelUserID <= 0 {
+		return nil, errors.New("invalid third-level user group update")
+	}
+	changedIDs := make([]int, 0)
+	frontier := []int{thirdLevelUserID}
+	seen := map[int]struct{}{thirdLevelUserID: {}}
+	for len(frontier) > 0 {
+		var descendants []User
+		if err := lockForUpdate(tx.Unscoped()).Select("id", "role", "creator_id", "group", "deleted_at").
+			Where("creator_id IN ?", frontier).Order("id").Find(&descendants).Error; err != nil {
+			return nil, err
+		}
+		frontier = frontier[:0]
+		for i := range descendants {
+			user := &descendants[i]
+			if _, ok := seen[user.Id]; ok {
+				continue
+			}
+			seen[user.Id] = struct{}{}
+			if user.Role == common.RoleThirdLevelUser {
+				continue
+			}
+			frontier = append(frontier, user.Id)
+			if (user.Role != common.RoleUserManager && user.Role != common.RoleCommonUser) || user.Group == group {
+				continue
+			}
+			if _, err := IncrementUserAuthVersionWithTx(tx, user.Id); err != nil {
+				return nil, err
+			}
+			result := tx.Unscoped().Model(&User{}).Where("id = ?", user.Id).Update("group", group)
+			if result.Error != nil {
+				return nil, result.Error
+			}
+			if result.RowsAffected == 1 && !user.DeletedAt.Valid {
+				changedIDs = append(changedIDs, user.Id)
+			}
+		}
+	}
+	return changedIDs, nil
 }
 
 func GetUserById(id int, selectAll bool) (*User, error) {
@@ -530,6 +974,18 @@ func GetUserById(id int, selectAll bool) (*User, error) {
 		err = DB.Omit("password", "access_token").First(&user, "id = ?", id).Error
 	}
 	return &user, err
+}
+
+func GetUserByIdInManagementScope(id int, scope UserManagementScope, selectAll bool) (*User, error) {
+	if id <= 0 {
+		return nil, gorm.ErrRecordNotFound
+	}
+	user := User{Id: id}
+	query := scope.Apply(DB.Model(&User{}))
+	if !selectAll {
+		query = query.Omit("password", "access_token")
+	}
+	return &user, query.First(&user, "id = ?", id).Error
 }
 
 // GetSelfUserById reads dashboard profile data and password existence in one
@@ -689,6 +1145,9 @@ func (user *User) Insert(inviterId int) error {
 				return err
 			}
 			user.Quota = common.QuotaForNewUser
+			if user.CreatorID != 0 {
+				user.Quota = 0
+			}
 			user.AffCode = common.GetRandomString(4)
 
 			// 初始化用户设置，包括默认的边栏配置
@@ -724,6 +1183,10 @@ func (user *User) finishInsert(inviterId int) {
 		}
 	}
 
+	if user.CreatorID != 0 {
+		return
+	}
+
 	if common.QuotaForNewUser > 0 {
 		RecordLog(user.Id, LogTypeSystem, fmt.Sprintf("新用户注册赠送 %s", logger.LogQuota(common.QuotaForNewUser)))
 	}
@@ -753,6 +1216,9 @@ func (user *User) InsertWithTx(tx *gorm.DB, inviterId int) error {
 			return err
 		}
 		user.Quota = common.QuotaForNewUser
+		if user.CreatorID != 0 {
+			user.Quota = 0
+		}
 		user.AffCode = common.GetRandomString(4)
 
 		// 初始化用户设置
@@ -844,6 +1310,7 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 	}
 	if err = tx.Model(&current).Omit(
 		"access_token",
+		"creator_id",
 		"quota",
 		"used_quota",
 		"request_count",
@@ -953,8 +1420,8 @@ func (user *User) ClearBinding(bindingType string) error {
 	return updateUserCache(*user)
 }
 
-func (user *User) Delete() error {
-	return user.delete(nil)
+func (user *User) Delete(scopes ...UserManagementScope) error {
+	return user.delete(nil, scopes...)
 }
 
 func DeleteUserForSession(identity AuthSessionIdentity) error {
@@ -962,23 +1429,45 @@ func DeleteUserForSession(identity AuthSessionIdentity) error {
 	return user.delete(&identity)
 }
 
-func (user *User) delete(identity *AuthSessionIdentity) error {
+func (user *User) delete(identity *AuthSessionIdentity, scopes ...UserManagementScope) error {
 	if user.Id == 0 {
 		return errors.New("id 为空！")
 	}
 	var nextAuthVersion int64
 	if err := DB.Transaction(func(tx *gorm.DB) error {
+		var target *User
+		if len(scopes) != 0 {
+			var err error
+			target, err = scopes[0].LockManagedUser(tx, user.Id, true)
+			if err != nil {
+				return err
+			}
+		}
 		if identity != nil {
 			if err := ValidateAuthSessionWithTx(tx, *identity); err != nil {
 				return err
 			}
-			var role int
-			if err := tx.Model(&User{}).Where("id = ?", user.Id).Select("role").Scan(&role).Error; err != nil {
+			var current User
+			if err := tx.Select("id", "role").First(&current, user.Id).Error; err != nil {
 				return err
 			}
-			if role == common.RoleRootUser {
+			target = &current
+			if current.Role == common.RoleRootUser {
 				return ErrCannotDeleteRootUser
 			}
+		} else if target == nil {
+			var current User
+			if err := lockForUpdate(tx.Unscoped()).Select("id", "role").First(&current, user.Id).Error; err != nil {
+				return err
+			}
+			target = &current
+		}
+		if len(scopes) != 0 {
+			if err := scopes[0].CheckManagedDeletion(tx, target); err != nil {
+				return err
+			}
+		} else if err := checkManagedUserHasChildren(tx, target); err != nil {
+			return err
 		}
 		var err error
 		nextAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
@@ -998,13 +1487,37 @@ func (user *User) delete(identity *AuthSessionIdentity) error {
 	return invalidateUserCache(user.Id)
 }
 
-func (user *User) HardDelete() error {
+func (user *User) HardDelete(scopes ...UserManagementScope) error {
 	if user.Id == 0 {
 		return errors.New("id 为空！")
 	}
 	var tokens []Token
 	var deletedAuthVersion int64
 	err := DB.Transaction(func(tx *gorm.DB) error {
+		var target *User
+		if len(scopes) != 0 {
+			var err error
+			target, err = scopes[0].LockManagedUser(tx, user.Id, true)
+			if err != nil {
+				return err
+			}
+			if target.Role == common.RoleRootUser {
+				return ErrUserManagementPermission
+			}
+		} else {
+			var current User
+			if err := lockForUpdate(tx.Unscoped()).Select("id", "role").First(&current, user.Id).Error; err != nil {
+				return err
+			}
+			target = &current
+		}
+		if len(scopes) != 0 {
+			if err := scopes[0].CheckManagedDeletion(tx, target); err != nil {
+				return err
+			}
+		} else if err := checkManagedUserHasChildren(tx, target); err != nil {
+			return err
+		}
 		var err error
 		deletedAuthVersion, err = IncrementUserAuthVersionWithTx(tx, user.Id)
 		if err != nil {
@@ -1031,6 +1544,24 @@ func (user *User) HardDelete() error {
 	}
 	if err := invalidateUserCache(user.Id); err != nil {
 		common.SysError(fmt.Sprintf("failed to invalidate user cache after hard deleting user %d: %v", user.Id, err))
+	}
+	return nil
+}
+
+var ErrManagedUserBalanceRemaining = errors.New("reclaim the user's remaining quota before deletion")
+
+func (user *User) checkManagedDeletionBalance() error {
+	if user.Quota != 0 {
+		return ErrManagedUserBalanceRemaining
+	}
+	if common.BatchUpdateEnabled && !common.RedisEnabled {
+		return ErrQuotaTransferUnavailable
+	}
+	if common.RedisEnabled {
+		cached, err := cacheGetUserBase(user.Id)
+		if err != nil || cached.Quota != 0 {
+			return ErrQuotaTransferUnavailable
+		}
 	}
 	return nil
 }
@@ -1193,22 +1724,44 @@ func ResetUserPasswordByEmail(email string, password string) error {
 	if err != nil {
 		return err
 	}
+	return ResetUserPasswordByIDAndEmail(user.Id, email, password)
+}
+
+func ResetUserPasswordByIDAndEmail(userID int, email string, password string) error {
+	email = NormalizeEmail(email)
+	if userID <= 0 || email == "" || password == "" {
+		return errors.New("用户、邮箱地址或密码为空！")
+	}
 	hashedPassword, err := common.HashAccountPassword(password)
 	if err != nil {
 		return err
 	}
 	if err = DB.Transaction(func(tx *gorm.DB) error {
-		if _, err := IncrementUserAuthVersionWithTx(tx, user.Id); err != nil {
+		var user User
+		if err := lockForUpdate(tx).Where("id = ? AND LOWER(email) = ?", userID, email).First(&user).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return ErrEmailNotFound
+			}
 			return err
 		}
-		return tx.Model(&User{}).Where("id = ?", user.Id).Update("password", hashedPassword).Error
+		if _, err := IncrementUserAuthVersionWithTx(tx, userID); err != nil {
+			return err
+		}
+		result := tx.Model(&User{}).Where("id = ? AND LOWER(email) = ?", userID, email).Update("password", hashedPassword)
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return ErrEmailNotFound
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
-	if err := PublishUserAuthCache(user.Id); err != nil {
+	if err := PublishUserAuthCache(userID); err != nil {
 		return err
 	}
-	_, err = RevokeAllUserSessions(user.Id, "password_reset")
+	_, err = RevokeAllUserSessions(userID, "password_reset")
 	return err
 }
 

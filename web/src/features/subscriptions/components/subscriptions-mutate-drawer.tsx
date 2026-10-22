@@ -68,7 +68,7 @@ import { handleServerError } from '@/lib/handle-server-error'
 import {
   createPlan,
   updatePlan,
-  getGroups,
+  getUserGroupNames,
   createWaffoPancakeSubscriptionProduct,
   listWaffoPancakeSubscriptionProductOptions,
 } from '../api'
@@ -120,7 +120,7 @@ export function SubscriptionsMutateDrawer({
       } else {
         form.reset(PLAN_FORM_DEFAULTS)
       }
-      getGroups()
+      getUserGroupNames()
         .then((res) => {
           if (res.success) {
             setGroupOptions(res.data || [])

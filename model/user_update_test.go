@@ -398,3 +398,27 @@ func TestResetUserPasswordByEmailRequiresSingleActiveMatch(t *testing.T) {
 	err = ResetUserPasswordByEmail("missing@example.com", "NewPassword123")
 	require.True(t, errors.Is(err, ErrEmailNotFound))
 }
+
+func TestResetUserPasswordByIDAndEmailBindsResetToTarget(t *testing.T) {
+	setupUserUpdateTestState(t)
+	target := User{Username: "id-reset-target", Password: "target-original", Email: "managed-reset@example.com", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "id-reset-target"}
+	duplicate := User{Username: "id-reset-duplicate", Password: "duplicate-original", Email: "MANAGED-RESET@example.com", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "id-reset-duplicate"}
+	require.NoError(t, DB.Create(&target).Error)
+	require.NoError(t, DB.Create(&duplicate).Error)
+
+	require.NoError(t, ResetUserPasswordByIDAndEmail(target.Id, "MANAGED-RESET@example.com", "TargetPassword123"))
+	var targetStored, duplicateStored User
+	require.NoError(t, DB.First(&targetStored, target.Id).Error)
+	require.NoError(t, DB.First(&duplicateStored, duplicate.Id).Error)
+	assert.True(t, common.ValidatePasswordAndHash("TargetPassword123", targetStored.Password))
+	assert.Equal(t, duplicate.Password, duplicateStored.Password)
+
+	require.NoError(t, DB.Model(&target).Update("email", "changed-reset-target@example.com").Error)
+	replacement := User{Username: "id-reset-replacement", Password: "replacement-original", Email: "managed-reset@example.com", Role: common.RoleCommonUser, Status: common.UserStatusEnabled, Group: "default", AffCode: "id-reset-replacement"}
+	require.NoError(t, DB.Create(&replacement).Error)
+	err := ResetUserPasswordByIDAndEmail(target.Id, "managed-reset@example.com", "WrongTargetPassword123")
+	require.ErrorIs(t, err, ErrEmailNotFound)
+	var replacementStored User
+	require.NoError(t, DB.First(&replacementStored, replacement.Id).Error)
+	assert.Equal(t, replacement.Password, replacementStored.Password)
+}

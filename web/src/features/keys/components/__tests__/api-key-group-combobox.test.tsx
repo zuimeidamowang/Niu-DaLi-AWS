@@ -67,13 +67,14 @@ const options = [
   { value: 'vip', label: 'vip', desc: 'Priority group', ratio: 3 },
 ]
 
-function Harness(props: { initialValue: string }) {
+function Harness(props: { initialValue: string; hideAutoOption?: boolean }) {
   const [value, setValue] = useState(props.initialValue)
 
   return (
     <I18nextProvider i18n={i18n}>
       <ApiKeyGroupCombobox
         options={options}
+        hideAutoOption={props.hideAutoOption}
         value={value}
         onValueChange={setValue}
       />
@@ -97,6 +98,23 @@ function getCommandItem(label: string): HTMLElement {
 }
 
 describe('API key group combobox Auto effect', () => {
+  test('hides Auto from choices while preserving an existing Auto selection', () => {
+    render(<Harness initialValue='auto' hideAutoOption />)
+
+    const trigger = getTrigger()
+    expect(trigger).toHaveTextContent('auto')
+    expect(trigger).toHaveAttribute('data-auto-group-effect', 'trigger')
+
+    fireEvent.click(trigger)
+
+    expect(
+      screen.queryByRole('option', { name: /global automatic routing/i })
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('option', { name: /user group/i })
+    ).toBeInTheDocument()
+  })
+
   test('uses the compact table capsules in the selected group and dropdown options', () => {
     setReducedMotion(false)
     render(<Harness initialValue='auto' />)

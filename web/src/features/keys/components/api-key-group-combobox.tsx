@@ -56,6 +56,7 @@ type ApiKeyGroupComboboxProps = {
   onValueChange: (value: string) => void
   placeholder?: string
   disabled?: boolean
+  hideAutoOption?: boolean
 }
 
 export function ApiKeyGroupCombobox({
@@ -64,6 +65,7 @@ export function ApiKeyGroupCombobox({
   onValueChange,
   placeholder,
   disabled,
+  hideAutoOption = false,
 }: ApiKeyGroupComboboxProps) {
   const { t } = useTranslation()
   const [open, setOpen] = useState(false)
@@ -73,10 +75,13 @@ export function ApiKeyGroupCombobox({
   const isAutoSelected = selectedOption?.value === 'auto'
 
   const filteredOptions = useMemo(() => {
+    const visibleOptions = hideAutoOption
+      ? options.filter((option) => option.value !== 'auto')
+      : options
     const search = searchValue.trim().toLowerCase()
-    if (!search) return options
+    if (!search) return visibleOptions
 
-    return options.filter((option) => {
+    return visibleOptions.filter((option) => {
       const ratioText = String(option.ratio ?? '').toLowerCase()
       return (
         option.value.toLowerCase().includes(search) ||
@@ -85,7 +90,7 @@ export function ApiKeyGroupCombobox({
         ratioText.includes(search)
       )
     })
-  }, [options, searchValue])
+  }, [hideAutoOption, options, searchValue])
 
   const handleSelect = (selectedValue: string) => {
     onValueChange(selectedValue)

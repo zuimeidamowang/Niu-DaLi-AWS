@@ -40,6 +40,7 @@ import {
 import userEvent from '@testing-library/user-event'
 import { createInstance } from 'i18next'
 import { I18nextProvider } from 'react-i18next'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -53,6 +54,7 @@ import {
 } from '@/stores/system-config-store'
 
 import type { User } from '../../types'
+import { UserQuotaDialog } from '../user-quota-dialog'
 import { useUsersColumns } from '../users-columns'
 import { UsersProvider } from '../users-provider'
 import { UsersTable } from '../users-table'
@@ -254,8 +256,10 @@ function UsersPage() {
   )
 }
 
-async function renderUsersList(emptyInvitation = false) {
-  useAuthStore.getState().auth.setUser({ id: 1, username: 'admin', role: 100 })
+async function renderUsersList(emptyInvitation = false, viewerRole = 100) {
+  useAuthStore
+    .getState()
+    .auth.setUser({ id: 1, username: 'admin', role: viewerRole })
   const get = vi.spyOn(api, 'get').mockResolvedValue({
     data: {
       success: true,
@@ -269,7 +273,8 @@ async function renderUsersList(emptyInvitation = false) {
             status: 1,
             quota: 1900,
             used_quota: 1100,
-            request_count: 0,
+            request_count: 17,
+            creator_id: 1,
             created_at: Math.floor(Date.now() / 1000) - 86400,
             last_login_at: Math.floor(Date.now() / 1000) - 20,
             group: 'default',
@@ -435,3 +440,146 @@ it('labels raw quota mode as tokens without introducing a currency symbol', () =
     within(screen.getAllByRole('cell')[0]).getByText('200')
   ).toBeInTheDocument()
 })
+
+it.each([5, 6])(
+  'manager role %s quota transfer refreshes their actual balance immediately after success',
+  async (role) => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'manager', role, quota: 5000000 })
+    vi.spyOn(api, 'get')
+      .mockResolvedValueOnce({
+        data: { success: true, data: { quota: 5000000 } },
+      })
+      .mockResolvedValueOnce({
+        data: { success: true, data: { quota: 4500000 } },
+      })
+    const post = vi
+      .spyOn(api, 'post')
+      .mockResolvedValue({ data: { success: true } })
+    const onSuccess = vi.fn()
+    const onOpenChange = vi.fn()
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    clients.push(client)
+    render(
+      <QueryClientProvider client={client}>
+        <UserQuotaDialog
+          open
+          onOpenChange={onOpenChange}
+          userId={2}
+          currentQuota={1000000}
+          onSuccess={onSuccess}
+        />
+      </QueryClientProvider>
+    )
+    expect(
+      await screen.findByText('Your available balance', { exact: false })
+    ).toBeVisible()
+    expect(
+      screen.getByText(
+        'Quota increases are deducted from your balance. Reclaimed quota is returned to your balance.'
+      )
+    ).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Add' })).toHaveAttribute(
+      'aria-pressed',
+      'true'
+    )
+    await userEvent.type(
+      screen.getByRole('spinbutton', { name: 'Amount (USD)' }),
+      '1'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith('/api/user/manage', {
+        id: 2,
+        action: 'add_quota',
+        mode: 'add',
+        value: 500000,
+      })
+    )
+    await waitFor(() =>
+      expect(useAuthStore.getState().auth.user?.quota).toBe(4500000)
+    )
+    expect(onSuccess).toHaveBeenCalled()
+    expect(onOpenChange).toHaveBeenCalledWith(false)
+  }
+)
+
+it.each([5, 6])(
+  'manager role %s with insufficient balance keeps the quota dialog open and displays the server failure',
+  async (role) => {
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 1, username: 'manager', role, quota: 0 })
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: { quota: 0 } },
+    })
+    vi.spyOn(api, 'post').mockResolvedValue({
+      data: { success: false, message: 'Insufficient manager quota' },
+    })
+    const error = vi.spyOn(toast, 'error')
+    const onSuccess = vi.fn()
+    const onOpenChange = vi.fn()
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })
+    clients.push(client)
+    render(
+      <QueryClientProvider client={client}>
+        <UserQuotaDialog
+          open
+          onOpenChange={onOpenChange}
+          userId={2}
+          currentQuota={0}
+          onSuccess={onSuccess}
+        />
+      </QueryClientProvider>
+    )
+    await userEvent.type(
+      screen.getByRole('spinbutton', { name: 'Amount (USD)' }),
+      '1'
+    )
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }))
+    await waitFor(() =>
+      expect(error).toHaveBeenCalledWith('Insufficient manager quota')
+    )
+    expect(onSuccess).not.toHaveBeenCalled()
+    expect(onOpenChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog', { name: 'Adjust Quota' })).toBeVisible()
+  }
+)
+
+it('switching from admin to manager immediately removes previously cached global users', async () => {
+  const get = await renderUsersList()
+  let resolveUsers: (value: unknown) => void = () => undefined
+  const nextUsers = new Promise((resolve) => {
+    resolveUsers = resolve
+  })
+  get.mockImplementation(async () => nextUsers)
+  act(() =>
+    useAuthStore
+      .getState()
+      .auth.setUser({ id: 8, username: 'manager', role: 6 })
+  )
+  expect(
+    screen.queryByText('long-user-name-for-table-layout')
+  ).not.toBeInTheDocument()
+  resolveUsers({ data: { success: true, data: { items: [], total: 0 } } })
+  expect(await screen.findByText('No Users Found')).toBeVisible()
+})
+
+it.each([5, 6])(
+  'manager role %s can read child usage and request counts in the existing users table',
+  async (role) => {
+    await renderUsersList(false, role)
+    expect(screen.getByRole('columnheader', { name: 'Requests' })).toBeVisible()
+    const row = screen.getByRole('row', {
+      name: /long-user-name-for-table-layout/,
+    })
+    expect(within(row).getByText('17')).toBeVisible()
+    expect(within(row).getByText('0.0038')).toBeVisible()
+    expect(within(row).getByText('0.0022')).toBeVisible()
+  }
+)
