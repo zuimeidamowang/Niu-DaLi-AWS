@@ -8,7 +8,7 @@
 ## 1. 端到端链路
 
 PR 合并 → `main` 分支 → GitHub Actions 构建 `linux/amd64` 镜像 → 推送 GHCR（**public**）→
-唯一发布操作人在服务器上执行 `deploy.sh <full-sha>`。
+唯一发布操作人在服务器上执行 Job Summary 中带完整镜像引用的 `deploy.sh` 命令。
 
 - CI 产出镜像 tag：`sha-<完整40位小写sha>`（唯一权威，发布/回滚锚点）、`sha-<short12>`（便利别名）、`main`（移动指针，**禁止用于发布记录**）。
 - **不产出 `latest`**，避免「移动指针」造成发布记录不可追溯。
@@ -79,7 +79,7 @@ sequenceDiagram
 ## 3. GHCR public 说明
 
 - 镜像推送到 **public** 的 GHCR 包。
-- 生产服务器**零 GitHub 凭据**、**无需 `docker login`**，直接 `docker pull ghcr.io/shiyujie167-ui/niu-dali:sha-<sha>`。
+- 生产服务器**零 GitHub 凭据**、**无需 `docker login`**，直接 `docker pull ghcr.io/zuimeidamowang/niu-dali:sha-<sha>`。
 - 回滚、换机、灾备重建均可**匿名拉取**，不依赖任何服务器侧密钥。
 
 ---

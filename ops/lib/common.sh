@@ -24,6 +24,7 @@ require_cmd() {
 # --------------------------- 环境载入 ---------------------------
 # 若存在 ops.env（可由 OPS_ENV_FILE 覆盖），先 source，让操作人固化服务器实际路径。
 # 例如 ops.env 中写：
+#   GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali
 #   COMPOSE_DIR=/srv/new-api/production
 #   COMPOSE_FILE=/srv/new-api/production/compose.yaml
 #   COMPOSE_PROJECT_NAME=newapi-prod
@@ -39,7 +40,7 @@ load_ops_env() {
 load_ops_env
 
 # --------------------------- 可覆盖默认值 ---------------------------
-GHCR_PREFIX="${GHCR_PREFIX:-ghcr.io/shiyujie167-ui/niu-dali}"
+GHCR_PREFIX="${GHCR_PREFIX:-ghcr.io/zuimeidamowang/niu-dali}"
 # 生产真实值（依据项目自带运维技能 niu-dali-prod-log-analysis）：
 #   编排文件 /srv/new-api/production/compose.yaml，project newapi-prod，服务 app。
 COMPOSE_DIR="${COMPOSE_DIR:-/srv/new-api/production}"
@@ -204,7 +205,7 @@ if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
 ops/lib/common.sh —— 共用库，请勿直接运行，应由 ops/ 下脚本 source。
 
 主要变量（均可被环境变量覆盖，或写入 ops.env）：
-  GHCR_PREFIX         镜像前缀       默认 ghcr.io/shiyujie167-ui/niu-dali
+  GHCR_PREFIX         镜像前缀       默认 ghcr.io/zuimeidamowang/niu-dali
   COMPOSE_DIR         compose 目录   默认 /srv/new-api/production
   COMPOSE_FILE        compose 文件   自动探测
   COMPOSE_PROJECT_NAME compose project 默认 newapi-prod

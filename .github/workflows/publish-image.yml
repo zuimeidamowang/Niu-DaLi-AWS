@@ -138,6 +138,6 @@ jobs:
             echo ""
             echo "在**生产服务器**上执行发布（由唯一发布操作人操作）:"
             echo '```'
-            echo "/srv/new-api/ops/deploy.sh ${{ steps.meta.outputs.full_sha }}"
+            echo "/srv/new-api/ops/deploy.sh ${{ steps.meta.outputs.image_ref }}"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"

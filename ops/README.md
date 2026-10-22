@@ -29,7 +29,7 @@
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `OPS_ENV_FILE` | `/srv/new-api/ops/ops.env` | 操作人固化服务器实际路径的配置文件；存在则被 source |
-| `GHCR_PREFIX` | `ghcr.io/shiyujie167-ui/niu-dali` | 镜像前缀（GHCR public） |
+| `GHCR_PREFIX` | `ghcr.io/zuimeidamowang/niu-dali` | 镜像前缀（GHCR public） |
 | `COMPOSE_DIR` | `/srv/new-api/production` | compose 项目目录（含 `.env`） |
 | `COMPOSE_FILE` | 自动探测 | 探测顺序见下（生产为 `/srv/new-api/production/compose.yaml`） |
 | `COMPOSE_PROJECT_NAME` | `newapi-prod` | compose project 名（**必须显式绑定**，否则会另起并行容器） |
@@ -56,6 +56,7 @@
 **`ops.env` 用法示例**（把服务器实际路径固化，脚本每次运行自动载入）：
 ```sh
 # /srv/new-api/ops/ops.env
+GHCR_PREFIX=ghcr.io/zuimeidamowang/niu-dali
 COMPOSE_DIR=/srv/new-api/production
 COMPOSE_FILE=/srv/new-api/production/compose.yaml
 COMPOSE_PROJECT_NAME=newapi-prod
@@ -63,6 +64,11 @@ LOCK_DIR=/srv/new-api/ops/locks
 RELEASES_DIR=/srv/new-api/releases
 KEEP_IMAGES=3
 ```
+
+从旧仓库迁移时，同时核对服务器 `ops.env` 中已有的 `GHCR_PREFIX`，避免旧值覆盖新默认值。
+`ops.env` 会先被载入，其中的直接赋值也会覆盖同名环境变量；未赋值时才使用环境变量或脚本默认值。
+Actions 的 Job Summary 提供完整镜像引用，可直接传给 `deploy.sh`，无需依赖服务器的默认前缀。
+回滚旧仓库版本时也应传入该版本的完整镜像引用，避免把旧 SHA 解析到新仓库。
 
 ---
 
