@@ -47,3 +47,17 @@ func TestConsumeVerificationCodeWithKeyIsSingleUseConcurrently(t *testing.T) {
 	require.Equal(t, int32(1), consumed.Load())
 	assert.False(t, ConsumeVerificationCodeWithKey(key, "one-time-code", purpose))
 }
+
+func TestConsumeVerificationCodeWithKeyRejectsExpiredCode(t *testing.T) {
+	key := "expired-code@example.com"
+	purpose := ManagedPasswordResetPurpose
+	previousValidity := VerificationValidMinutes
+	VerificationValidMinutes = 0
+	t.Cleanup(func() {
+		VerificationValidMinutes = previousValidity
+		DeleteKey(key, purpose)
+	})
+	RegisterVerificationCodeWithKey(key, "expired-code", purpose)
+
+	assert.False(t, ConsumeVerificationCodeWithKey(key, "expired-code", purpose))
+}
