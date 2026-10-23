@@ -25,6 +25,7 @@ import {
   PricingToolbar,
   type PricingToolbarProps,
 } from '../components/pricing-toolbar'
+import { SearchBar } from '../components/search-bar'
 import type { PricingModel } from '../types'
 
 function toolbarProps(): PricingToolbarProps {
@@ -61,6 +62,26 @@ function toolbarProps(): PricingToolbarProps {
 }
 
 describe('pricing controls', () => {
+  it('preserves search shortcuts, text changes and clearing with the shared input', async () => {
+    const onChange = vi.fn()
+    const onClear = vi.fn()
+    const user = userEvent.setup()
+    const { rerender } = render(
+      <SearchBar value='' onChange={onChange} onClear={onClear} />
+    )
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    await user.keyboard('{Control>}k{/Control}')
+    expect(input).toHaveFocus()
+    await user.type(input, 'x')
+    expect(onChange).toHaveBeenCalledWith('x')
+    rerender(<SearchBar value='x' onChange={onChange} onClear={onClear} />)
+    await user.click(screen.getByRole('button', { name: 'Clear search' }))
+    expect(onClear).toHaveBeenCalledOnce()
+    input.focus()
+    await user.keyboard('{Escape}')
+    expect(input).not.toHaveFocus()
+  })
+
   it('counts each model once per filter and updates counts when the catalog changes', () => {
     const props = toolbarProps()
     const base: PricingModel = {

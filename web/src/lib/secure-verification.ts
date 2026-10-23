@@ -20,6 +20,7 @@ import axios from 'axios'
 
 import {
   getServerErrorMessageKey,
+  getServerErrorStatusMessageKey,
   safeServerErrorMessage,
 } from './server-error-message'
 
@@ -46,6 +47,7 @@ export class AuthOperationError extends Error {
             ? 'Please try again later.'
             : undefined) ||
           error.response?.data?.message ||
+          getServerErrorStatusMessageKey(error) ||
           error.message ||
           fallback,
         error.response?.data?.code,

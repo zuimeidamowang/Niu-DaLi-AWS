@@ -18,6 +18,7 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { useTranslation } from 'react-i18next'
 
+import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
 import type { RankingPeriod } from '../types'
@@ -42,12 +43,12 @@ export function RankingsHero(props: RankingsHeroProps) {
   const { t } = useTranslation()
 
   return (
-    <section className='space-y-5'>
+    <section className='bg-card space-y-6 rounded-xl border p-6 shadow-sm sm:p-8'>
       <div className='space-y-2'>
-        <h1 className='text-[clamp(1.75rem,4vw,2.5rem)] leading-[1.15] font-bold tracking-tight'>
+        <h1 className='text-3xl leading-tight font-semibold tracking-tight sm:text-4xl'>
           {t('Rankings')}
         </h1>
-        <p className='text-muted-foreground/80 max-w-2xl text-sm'>
+        <p className='text-muted-foreground max-w-2xl text-sm leading-6'>
           {t(
             'Discover the most-used models and rising vendors on the platform, updated from live usage data.'
           )}
@@ -58,21 +59,22 @@ export function RankingsHero(props: RankingsHeroProps) {
       <div
         role='tablist'
         aria-label={t('Period')}
-        className='border-border/60 flex items-center border-b'
+        className='border-border flex flex-wrap items-center gap-1 border-b'
       >
         {PERIODS.map((p) => {
           const isActive = props.period === p.id
           return (
-            <button
+            <Button
               key={p.id}
+              variant='ghost'
               role='tab'
               type='button'
               aria-selected={isActive}
               onClick={() => props.onPeriodChange(p.id)}
               className={cn(
-                'focus-visible:ring-ring/40 relative -mb-px rounded-sm px-3 py-2 text-sm font-medium transition-colors focus-visible:ring-2 focus-visible:outline-none',
+                'relative -mb-px h-10 rounded-t-lg rounded-b-none px-4 text-sm font-medium',
                 isActive
-                  ? 'text-foreground'
+                  ? 'bg-primary/5 text-primary'
                   : 'text-muted-foreground hover:text-foreground'
               )}
             >
@@ -80,11 +82,11 @@ export function RankingsHero(props: RankingsHeroProps) {
               <span
                 aria-hidden
                 className={cn(
-                  'bg-foreground absolute inset-x-3 -bottom-px h-[2px] rounded-full transition-opacity',
+                  'bg-primary absolute inset-x-3 -bottom-px h-[2px] rounded-full transition-opacity',
                   isActive ? 'opacity-100' : 'opacity-0'
                 )}
               />
-            </button>
+            </Button>
           )
         })}
       </div>

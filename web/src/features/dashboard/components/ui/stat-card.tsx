@@ -211,7 +211,7 @@ function StatCardDetails(props: { details: StatCardDetail[] }) {
       {props.details.map((detail) => (
         <div
           key={detail.label}
-          className='bg-muted/40 rounded-lg border border-transparent px-2.5 py-2'
+          className='bg-muted/35 border-border/50 min-w-0 rounded-lg border px-3 py-2.5'
         >
           <div className='text-muted-foreground truncate text-[11px] leading-none font-medium'>
             {detail.label}
@@ -257,12 +257,12 @@ export function StatCard(props: StatCardProps) {
   } else if (props.error) {
     valueContent = (
       <div className='flex flex-col gap-1'>
-        <div className='text-muted-foreground mt-0.5 font-mono text-base font-bold tracking-tight break-all tabular-nums sm:text-2xl'>
+        <div className='text-muted-foreground mt-0.5 text-2xl leading-tight font-semibold tracking-tight break-all tabular-nums sm:text-3xl'>
           --
         </div>
         <p
           className={cn(
-            'text-muted-foreground/60 line-clamp-1 text-[11px] sm:text-xs',
+            'text-muted-foreground line-clamp-1 text-xs leading-relaxed',
             props.compactMobile && 'hidden sm:block'
           )}
         >
@@ -273,12 +273,12 @@ export function StatCard(props: StatCardProps) {
   } else {
     valueContent = (
       <div className='flex flex-col gap-1'>
-        <div className='text-foreground font-mono text-base font-semibold tracking-tight break-all tabular-nums sm:text-2xl'>
+        <div className='text-foreground text-2xl leading-tight font-semibold tracking-tight break-all tabular-nums sm:text-3xl'>
           {props.value}
         </div>
         <p
           className={cn(
-            'text-muted-foreground/60 line-clamp-1 text-[11px] leading-relaxed sm:text-xs',
+            'text-muted-foreground line-clamp-1 text-xs leading-relaxed',
             props.compactMobile && 'hidden sm:block'
           )}
         >
@@ -300,23 +300,22 @@ export function StatCard(props: StatCardProps) {
   return (
     <div
       className={cn(
-        'group flex flex-col justify-between sm:min-h-32 sm:gap-3',
-        props.compactMobile ? 'gap-1' : 'gap-1.5'
+        'group flex min-w-0 flex-col justify-between sm:min-h-36 sm:gap-4',
+        props.compactMobile ? 'gap-3' : 'gap-3.5'
       )}
     >
-      <div className='flex items-start justify-between gap-1'>
-        <div className='text-muted-foreground flex items-center gap-1 text-[11px] font-medium sm:gap-2 sm:text-xs'>
+      <div className='flex items-start justify-between gap-2'>
+        <div className='text-muted-foreground flex min-w-0 items-center gap-2 text-xs font-medium'>
           <IconBadge
             tone={iconTone}
             size='stat'
             className={cn(
-              props.compactMobile &&
-                'size-4 rounded-sm [&>svg]:size-2.5 sm:size-7 sm:rounded-md sm:[&>svg]:size-3.5'
+              props.compactMobile && 'size-7 rounded-lg [&>svg]:size-3.5'
             )}
           >
             <Icon />
           </IconBadge>
-          <span className='line-clamp-1 leading-snug sm:line-clamp-2'>
+          <span className='line-clamp-2 min-w-0 leading-relaxed break-words'>
             {props.title}
           </span>
         </div>

@@ -107,6 +107,19 @@ async function renderOverview() {
 }
 
 describe('overview setup guide', () => {
+  it('stacks usage cards on narrow screens and keeps three columns on larger screens', async () => {
+    const { container } = await renderOverview()
+    await screen.findByRole('heading', { name: 'Usage at a glance' })
+
+    const usageGrid = container.querySelector('.sm\\:grid-cols-3')
+    expect(usageGrid).toHaveClass('grid-cols-1')
+    expect(usageGrid?.children).toHaveLength(3)
+    expect(screen.getByRole('button', { name: 'Wallet' })).toHaveAttribute(
+      'href',
+      '/wallet'
+    )
+  })
+
   it('shows usage first and only a header entry when setup is complete', async () => {
     await renderOverview()
 

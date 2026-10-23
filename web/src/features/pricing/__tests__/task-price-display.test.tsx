@@ -109,6 +109,37 @@ const imageResolutionExpression =
   ' * (param("size") == "2k" ? 1.3333333333333333 : 1)' +
   ' * (param("size") == "2048x2048" ? 1.3333333333333333 : 1)'
 
+it('wraps long model names in the details header while keeping the copy control visible', () => {
+  vi.spyOn(api, 'get').mockResolvedValue({ data: { data: { groups: [] } } })
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  clients.push(client)
+  const modelName =
+    'provider/model-with-an-unbroken-long-release-and-version-name'
+  render(
+    <QueryClientProvider client={client}>
+      <ModelDetailsContent
+        model={{ ...model, model_name: modelName }}
+        groupRatio={{}}
+        usableGroup={{}}
+        endpointMap={{}}
+        autoGroups={[]}
+        priceRate={1}
+        usdExchangeRate={1}
+        tokenUnit='M'
+      />
+    </QueryClientProvider>
+  )
+
+  expect(
+    screen.getByRole('heading', { name: modelName, level: 1 })
+  ).toHaveClass('min-w-0', '[overflow-wrap:anywhere]')
+  expect(screen.getByRole('button', { name: 'Copy model name' })).toHaveClass(
+    'shrink-0'
+  )
+})
+
 it('shows final image resolution prices and group prices in marketplace details without multipliers', () => {
   const previous = useSystemConfigStore.getState().config.currency
   useSystemConfigStore.getState().setConfig({

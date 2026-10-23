@@ -101,7 +101,7 @@ afterEach(() => {
 })
 
 describe('theme preference persistence', () => {
-  it('starts in light Forest Whisper when no preferences exist and the system is dark', () => {
+  it('starts in the light base theme when no preferences exist and the system is dark', () => {
     vi.spyOn(window, 'matchMedia').mockReturnValue({
       ...window.matchMedia('(prefers-color-scheme: dark)'),
       matches: true,
@@ -112,7 +112,7 @@ describe('theme preference persistence', () => {
     expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
     expect(document.documentElement).toHaveClass('light')
     expect(document.documentElement).not.toHaveClass('dark')
-    expect(document.body).toHaveAttribute('data-theme-preset', 'forest-whisper')
+    expect(document.body).not.toHaveAttribute('data-theme-preset')
   })
 
   it('keeps an explicit system mode when the system is dark', () => {
@@ -140,7 +140,7 @@ describe('theme preference persistence', () => {
 
     expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
     expect(document.documentElement).toHaveClass('light')
-    expect(document.body).toHaveAttribute('data-theme-preset', 'forest-whisper')
+    expect(document.body).not.toHaveAttribute('data-theme-preset')
     expect(document.body).toHaveAttribute('data-theme-font', 'sans')
     expect(document.body).not.toHaveAttribute('data-theme-radius')
     expect(document.body).not.toHaveAttribute('data-theme-scale')
@@ -172,6 +172,7 @@ describe('theme preference persistence', () => {
   })
 
   it('preserves an explicit base preset after remounting', async () => {
+    localStorage.setItem('newapi:theme:v1:preset', 'rose-garden')
     const user = userEvent.setup()
     const first = render(<ThemeFixture />)
 
@@ -180,7 +181,7 @@ describe('theme preference persistence', () => {
     render(<ThemeFixture />)
 
     expect(document.body).not.toHaveAttribute('data-theme-preset')
-    expect(localStorage.getItem('newapi:theme:v1:preset')).toBe('default')
+    expect(localStorage.getItem('newapi:theme:v1:preset')).toBeNull()
   })
 
   it('keeps a reset after remounting even when the legacy ocean cookie remains', async () => {
@@ -198,7 +199,7 @@ describe('theme preference persistence', () => {
 
     expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
     expect(document.documentElement).toHaveClass('light')
-    expect(document.body).toHaveAttribute('data-theme-preset', 'forest-whisper')
+    expect(document.body).not.toHaveAttribute('data-theme-preset')
     expect(document.body).toHaveAttribute('data-theme-font', 'sans')
     expect(document.body).not.toHaveAttribute('data-theme-radius')
     expect(document.body).not.toHaveAttribute('data-theme-scale')
@@ -220,10 +221,7 @@ describe('theme preference persistence', () => {
       render(<ThemeFixture />)
 
       expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
-      expect(document.body).toHaveAttribute(
-        'data-theme-preset',
-        'forest-whisper'
-      )
+      expect(document.body).not.toHaveAttribute('data-theme-preset')
       expect(document.body).toHaveAttribute('data-theme-font', 'sans')
       expect(document.body).not.toHaveAttribute('data-theme-radius')
       expect(document.body).not.toHaveAttribute('data-theme-scale')
@@ -239,7 +237,7 @@ describe('theme preference persistence', () => {
     render(<ThemeFixture />)
 
     expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
-    expect(document.body).toHaveAttribute('data-theme-preset', 'forest-whisper')
+    expect(document.body).not.toHaveAttribute('data-theme-preset')
   })
 
   it('still applies and resets preferences when storage writes fail', async () => {
@@ -260,7 +258,7 @@ describe('theme preference persistence', () => {
     await user.click(screen.getByRole('button', { name: 'Reset' }))
 
     expect(screen.getByLabelText('Theme mode')).toHaveTextContent('light')
-    expect(document.body).toHaveAttribute('data-theme-preset', 'forest-whisper')
+    expect(document.body).not.toHaveAttribute('data-theme-preset')
   })
 
   it('preserves saved theme preferences during frontend cache initialization', () => {

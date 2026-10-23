@@ -44,14 +44,16 @@ export function Stats(_props: StatsProps) {
   ]
 
   return (
-    <section className='border-border bg-background border-y'>
-      <div className='mx-auto grid max-w-6xl grid-cols-2 px-5 sm:px-8 lg:grid-cols-4 lg:px-10'>
+    <section className='border-border bg-card border-y px-5 sm:px-8 lg:px-10'>
+      <div className='divide-border mx-auto grid max-w-6xl grid-cols-2 py-3 lg:grid-cols-4 lg:py-4'>
         {promises.map((item) => (
           <div
-            className='border-border flex min-h-28 flex-col justify-center border-r border-b px-4 py-6 odd:border-l nth-[n+3]:border-b-0 sm:px-6 lg:border-b-0 lg:border-l-0 lg:first:border-l'
+            className='border-border flex min-h-24 min-w-0 flex-col justify-center border-b px-4 py-5 even:border-l nth-[n+3]:border-b-0 sm:px-6 lg:border-b-0 lg:not-first:border-l'
             key={item.title}
           >
-            <p className='text-sm font-semibold'>{item.title}</p>
+            <p className='text-sm font-semibold [overflow-wrap:anywhere]'>
+              {item.title}
+            </p>
             <p className='text-muted-foreground mt-1 text-xs leading-5'>
               {item.description}
             </p>

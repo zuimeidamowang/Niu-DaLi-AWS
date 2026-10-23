@@ -47,14 +47,14 @@ export function HowItWorks() {
   ]
 
   return (
-    <section className='border-border bg-muted/20 border-y px-5 py-20 sm:px-8 md:py-28 lg:px-10'>
+    <section className='border-border bg-muted/35 border-y px-5 py-20 sm:px-8 md:py-24 lg:px-10'>
       <div className='mx-auto max-w-6xl'>
         <AnimateInView className='flex flex-col justify-between gap-4 sm:flex-row sm:items-end'>
           <div>
             <p className='text-primary text-sm font-medium'>
               {t('How It Works')}
             </p>
-            <h2 className='mt-3 text-3xl font-semibold text-balance md:text-4xl'>
+            <h2 className='mt-3 text-3xl font-semibold tracking-tight text-balance md:text-4xl'>
               {t('From balance to first request')}
             </h2>
           </div>
@@ -63,19 +63,19 @@ export function HowItWorks() {
           </p>
         </AnimateInView>
 
-        <ol className='mt-12 grid gap-8 md:grid-cols-3 md:gap-0'>
+        <ol className='mt-10 grid gap-5 md:grid-cols-3'>
           {steps.map((step, index) => (
             <AnimateInView
               as='li'
-              className='border-border relative border-t pt-6 md:border-t-0 md:border-l md:px-8 md:pt-0 first:md:border-l-0 first:md:pl-0'
+              className='border-border bg-card shadow-foreground/3 relative min-w-0 rounded-xl border p-6 shadow-sm'
               delay={index * 100}
               key={step.number}
             >
-              <span className='text-primary text-xs font-semibold'>
+              <span className='bg-primary/8 text-primary inline-flex size-10 items-center justify-center rounded-lg text-sm font-semibold tabular-nums'>
                 {step.number}
               </span>
-              <h3 className='mt-5 text-lg font-semibold'>{step.title}</h3>
-              <p className='text-muted-foreground mt-3 max-w-xs text-sm leading-6'>
+              <h3 className='mt-6 text-lg font-semibold'>{step.title}</h3>
+              <p className='text-muted-foreground mt-2 max-w-xs text-sm leading-6'>
                 {step.description}
               </p>
             </AnimateInView>

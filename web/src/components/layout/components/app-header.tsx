@@ -113,7 +113,7 @@ export function AppHeader({
 
   return (
     <Header>
-      <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-1'>
+      <div className='@container/system-brand flex min-w-0 flex-1 items-center gap-2'>
         <SystemBrand variant='inline' />
         <SystemUpdateAction presentation='version' />
       </div>
@@ -123,9 +123,9 @@ export function AppHeader({
       ) : null}
 
       {rightContent ?? (
-        <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2'>
+        <div className='ms-auto flex shrink-0 items-center gap-1 sm:gap-2.5'>
           {showTopNav && (
-            <div className='me-1 hidden lg:block'>
+            <div className='border-border/80 me-1 hidden border-e pe-4 lg:block'>
               <TopNav links={links} />
             </div>
           )}

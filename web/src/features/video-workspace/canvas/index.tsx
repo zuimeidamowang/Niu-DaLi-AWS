@@ -76,12 +76,12 @@ const backgroundProps = {
   variant: BackgroundVariant.Dots,
   gap: 20,
   size: 1,
-  color: '#d4d4d4',
-  bgColor: '#fff',
+  color: 'var(--border)',
+  bgColor: 'var(--background)',
 }
 const edgeOptions = {
   type: 'default',
-  style: { stroke: '#a3a3a3', strokeWidth: 1.5 },
+  style: { stroke: 'var(--muted-foreground)', strokeWidth: 1.5 },
   interactionWidth: 20,
 }
 
@@ -413,7 +413,7 @@ function CanvasEditor(props: {
           tabIndex={0}
           role='region'
           aria-label={t('Infinite canvas')}
-          className='relative h-[calc(100dvh-17rem)] min-h-[32rem] w-full overflow-hidden rounded-2xl border bg-white outline-none focus-visible:ring-2 focus-visible:ring-blue-500'
+          className='bg-background border-border/80 focus-visible:ring-ring [&_.react-flow__controls-button]:text-foreground relative h-[calc(100dvh-17rem)] min-h-[32rem] w-full overflow-hidden rounded-xl border shadow-xs outline-none focus-visible:ring-2'
         >
           <Canvas<CanvasNode>
             nodes={document.graph.nodes}
@@ -497,11 +497,11 @@ function CanvasEditor(props: {
           />
           {document.graph.nodes.length === 0 && (
             <div className='pointer-events-none absolute inset-0 flex items-center justify-center p-6'>
-              <div className='max-w-sm space-y-2 rounded-2xl border bg-white/95 p-6 text-center text-neutral-900 shadow-sm'>
+              <div className='bg-card/95 text-card-foreground border-border/80 max-w-sm space-y-2 rounded-xl border p-6 text-center shadow-xs'>
                 <p className='font-medium'>
                   {t('Start with a prompt, image or video node')}
                 </p>
-                <p className='text-sm text-neutral-500'>
+                <p className='text-muted-foreground text-sm'>
                   {t(
                     'Connect materials to a generation node to use them as real inputs.'
                   )}

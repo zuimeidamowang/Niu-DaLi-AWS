@@ -155,10 +155,15 @@ afterEach(() => {
 
 it('loads only direct managed children and hides descendants when a parent is collapsed', async () => {
   const { client, get } = await renderUserHierarchy()
+  const roleBadge = screen
+    .getAllByText('Third-level User')
+    .map((element) => element.closest('[data-slot="badge"]'))
+    .find((element) => element !== null)
   const thirdLevelToggle = screen.getByRole('button', {
     name: 'Expand sub-users of third-level',
   })
 
+  expect(roleBadge).toHaveClass('bg-chart-2/10', 'text-chart-2')
   expect(screen.getAllByText('Third-level User')[0]).toBeVisible()
   expect(thirdLevelToggle).toHaveAttribute('aria-expanded', 'false')
   expect(screen.queryByText(userManager.username)).not.toBeInTheDocument()

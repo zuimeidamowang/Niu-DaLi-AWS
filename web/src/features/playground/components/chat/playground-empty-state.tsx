@@ -46,7 +46,7 @@ export function PlaygroundEmptyState({
   return (
     <div className='flex min-h-[min(520px,calc(100svh-18rem))] items-center justify-center px-1 py-8 md:py-12'>
       <div className='grid w-full max-w-2xl gap-5 text-center'>
-        <div className='bg-muted/50 text-muted-foreground mx-auto flex size-11 items-center justify-center rounded-xl border'>
+        <div className='bg-primary/8 text-primary border-primary/10 mx-auto flex size-11 items-center justify-center rounded-xl border'>
           <MessageSquarePlusIcon className='size-5' aria-hidden='true' />
         </div>
 
@@ -67,7 +67,7 @@ export function PlaygroundEmptyState({
 
             return (
               <Button
-                className='h-auto min-h-11 justify-start gap-2 px-3 py-2.5 text-left whitespace-normal'
+                className='bg-card border-border/80 hover:border-primary/30 hover:bg-primary/5 h-auto min-h-11 justify-start gap-2 px-3 py-2.5 text-left whitespace-normal shadow-xs'
                 key={text}
                 onClick={() => onSelectPrompt(prompt)}
                 variant='outline'
