@@ -72,7 +72,8 @@ func setupManageUserTestDB(t *testing.T) *gorm.DB {
 			}
 		}
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserSession{}, &model.CasbinRule{}, &model.AuthzRole{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserGroupAssignment{}, &model.UserSession{}, &model.CasbinRule{}, &model.AuthzRole{}))
+	require.NoError(t, model.InitializeUserGroupAssignments())
 	require.NoError(t, logDB.AutoMigrate(&model.Log{}, &model.AuditLog{}))
 	versionQuery := "SELECT version()"
 	if dialect == "sqlite" {
@@ -89,6 +90,14 @@ func TestUserCreatorColumnMigrationPreservesRowsAndIsIdempotent(t *testing.T) {
 	existing := model.User{Username: "legacy-user", DisplayName: "Legacy User", Role: common.RoleCommonUser, Group: "existing", Quota: 120, AffCode: "legacy-user"}
 	require.NoError(t, db.Create(&existing).Error)
 	require.True(t, db.Migrator().HasColumn(&model.User{}, "CreatorID"))
+	require.NoError(t, db.Migrator().DropTable(&model.UserGroupAssignment{}))
+	legacyWithoutAssignments := model.User{
+		Username: "legacy-user-without-assignments",
+		Role:     common.RoleCommonUser,
+		Group:    "existing",
+		AffCode:  "legacy-user-without-assignments",
+	}
+	require.NoError(t, db.Create(&legacyWithoutAssignments).Error)
 	require.NoError(t, db.Migrator().DropColumn(&model.User{}, "CreatorID"))
 	require.False(t, db.Migrator().HasColumn(&model.User{}, "CreatorID"))
 
@@ -104,6 +113,19 @@ func TestUserCreatorColumnMigrationPreservesRowsAndIsIdempotent(t *testing.T) {
 	assert.Equal(t, existing.Group, migrated.Group)
 	assert.Equal(t, existing.Quota, migrated.Quota)
 	assert.Zero(t, migrated.CreatorID)
+	require.NoError(t, db.AutoMigrate(&model.UserGroupAssignment{}))
+	require.NoError(t, db.AutoMigrate(&model.UserGroupAssignment{}))
+	require.NoError(t, model.InitializeUserGroupAssignments())
+	require.NoError(t, model.InitializeUserGroupAssignments())
+	groups, err := model.GetUserGroupAssignments(existing.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"existing"}, groups, "legacy users retain their single billing group as an initial channel-group assignment")
+	var assignmentCount int64
+	require.NoError(t, db.Model(&model.UserGroupAssignment{}).Where("user_id = ?", existing.Id).Count(&assignmentCount).Error)
+	assert.EqualValues(t, 1, assignmentCount, "repeated startup backfill must stay idempotent")
+	legacyGroups, err := model.GetUserGroupAssignments(legacyWithoutAssignments.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"existing"}, legacyGroups, "legacy users without an assignment row inherit their billing group during backfill")
 
 	duplicate := model.User{Username: existing.Username, AffCode: "duplicate-legacy-user"}
 	assert.Error(t, db.Create(&duplicate).Error, "existing username uniqueness must survive migration")
@@ -646,6 +668,7 @@ func managerRequest(t *testing.T, operator model.User, method, path, body string
 
 func managerRequestWithRoute(t *testing.T, operator model.User, method, route, path, body string, handler gin.HandlerFunc) *httptest.ResponseRecorder {
 	t.Helper()
+	ensureManageUserGroups(t, model.DB, operator.Id, []string{operator.Group})
 	router := gin.New()
 	router.Handle(method, route, middleware.UserManagementAuth(), handler)
 	request := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -654,6 +677,26 @@ func managerRequestWithRoute(t *testing.T, operator model.User, method, route, p
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	return response
+}
+
+func ensureManageUserGroups(t *testing.T, db *gorm.DB, userID int, groups []string) {
+	t.Helper()
+	var count int64
+	require.NoError(t, db.Model(&model.UserGroupAssignment{}).Where("user_id = ?", userID).Count(&count).Error)
+	if count > 0 {
+		return
+	}
+	if len(groups) == 0 || groups[0] == "" {
+		groups = []string{"default"}
+	}
+	require.NoError(t, model.ReplaceUserGroupAssignmentsTx(db, userID, groups))
+}
+
+func setManageUserGroups(t *testing.T, db *gorm.DB, userID int, groups []string) {
+	t.Helper()
+	require.NoError(t, db.Transaction(func(tx *gorm.DB) error {
+		return model.ReplaceUserGroupAssignmentsTx(tx, userID, groups)
+	}))
 }
 
 func TestUserManagerListsAndSearchesOnlyOwnedOrdinaryUsers(t *testing.T) {
@@ -711,6 +754,7 @@ func TestUserManagerCreatesZeroQuotaAndRejectsPrivilegeForging(t *testing.T) {
 	pat := "manager-create-token"
 	manager := model.User{Username: "manager-create", Role: common.RoleUserManager, Group: "restricted", Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &pat}
 	require.NoError(t, db.Create(&manager).Error)
+	setManageUserGroups(t, db, manager.Id, []string{"default", "vip"})
 	response := managerRequest(t, manager, "POST", "/api/user/", `{"username":"created-child","password":"child-password"}`, CreateUser)
 	require.Contains(t, response.Body.String(), `"success":true`)
 	var child model.User
@@ -718,6 +762,9 @@ func TestUserManagerCreatesZeroQuotaAndRejectsPrivilegeForging(t *testing.T) {
 	assert.Equal(t, manager.Id, child.CreatorID)
 	assert.Equal(t, common.RoleCommonUser, child.Role)
 	assert.Equal(t, "restricted", child.Group)
+	groups, err := model.GetUserGroupAssignments(child.Id)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"default", "vip"}, groups, "new delegated users inherit all of their manager's channel groups")
 	assert.Zero(t, child.Quota)
 	assert.Zero(t, child.InviterId)
 	var gifts int64
@@ -730,6 +777,104 @@ func TestUserManagerCreatesZeroQuotaAndRejectsPrivilegeForging(t *testing.T) {
 	var count int64
 	require.NoError(t, db.Model(&model.User{}).Where("username = ?", "forged-child").Count(&count).Error)
 	assert.Zero(t, count)
+}
+
+func TestDelegatedUserGroupAssignmentsAllowSubsetsAndRejectUnassignedGroups(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	pat := "manager-group-scope-token"
+	manager := model.User{Username: "manager-group-scope", Role: common.RoleUserManager, Group: "default", Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &pat, AffCode: "manager-group-scope"}
+	require.NoError(t, db.Create(&manager).Error)
+	setManageUserGroups(t, db, manager.Id, []string{"default", "vip"})
+
+	response := managerRequest(t, manager, http.MethodPost, "/api/user/", `{"username":"manager-group-child","password":"child-password"}`, CreateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	var child model.User
+	require.NoError(t, db.First(&child, "username = ?", "manager-group-child").Error)
+
+	response = managerRequest(t, manager, http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":%q,"user_groups":["vip"]}`, child.Id, child.Username), UpdateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	groups, err := model.GetUserGroupAssignments(child.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vip"}, groups, "a manager may assign a subset of their own groups")
+
+	limitedToken := "manager-limited-group-token"
+	limitedManager := model.User{Username: "limited-manager", Role: common.RoleUserManager, Group: "default", Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &limitedToken, AffCode: "limited-manager"}
+	require.NoError(t, db.Create(&limitedManager).Error)
+	setManageUserGroups(t, db, limitedManager.Id, []string{"default"})
+	response = managerRequest(t, limitedManager, http.MethodPost, "/api/user/", `{"username":"limited-child","password":"child-password"}`, CreateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	child = model.User{}
+	require.NoError(t, db.First(&child, "username = ?", "limited-child").Error)
+
+	response = managerRequest(t, limitedManager, http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":%q,"user_groups":["vip"]}`, child.Id, child.Username), UpdateUser)
+	assert.Contains(t, response.Body.String(), `"success":false`, "a valid global group must still be rejected when the manager does not hold it")
+	groups, err = model.GetUserGroupAssignments(child.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default"}, groups, "rejected group assignments must leave the child's grants unchanged")
+}
+
+func TestAdminCannotChangeThirdLevelDescendantGroupsAndParentRemovalPrunesTree(t *testing.T) {
+	db := setupManageUserTestDB(t)
+	require.NoError(t, authz.Init(db))
+	adminToken := "group-admin-token"
+	thirdToken := "group-third-token"
+	admin := model.User{Username: "group-admin", Role: common.RoleAdminUser, Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &adminToken, AffCode: "admin-user-group-assignment"}
+	third := model.User{Username: "group-third", Role: common.RoleThirdLevelUser, Group: "default", Status: common.UserStatusEnabled, AuthVersion: 1, AccessToken: &thirdToken, AffCode: "third-level-user-group-assignment"}
+	require.NoError(t, db.Create(&admin).Error)
+	require.NoError(t, db.Create(&third).Error)
+	setManageUserGroups(t, db, admin.Id, []string{"default"})
+	setManageUserGroups(t, db, third.Id, []string{"default", "vip"})
+
+	response := managerRequest(t, third, http.MethodPost, "/api/user/", `{"username":"third-second","password":"child-password","role":5}`, CreateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	var secondLevel model.User
+	require.NoError(t, db.First(&secondLevel, "username = ?", "third-second").Error)
+	secondLevelToken := "second-level-token"
+	require.NoError(t, db.Model(&secondLevel).Update("access_token", secondLevelToken).Error)
+	secondLevel.SetAccessToken(secondLevelToken)
+	secondGroups, err := model.GetUserGroupAssignments(secondLevel.Id)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"default", "vip"}, secondGroups)
+
+	response = managerRequest(t, secondLevel, http.MethodPost, "/api/user/", `{"username":"third-leaf","password":"child-password"}`, CreateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	var ordinary model.User
+	require.NoError(t, db.First(&ordinary, "username = ?", "third-leaf").Error)
+	ordinaryGroups, err := model.GetUserGroupAssignments(ordinary.Id)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"default", "vip"}, ordinaryGroups)
+	deletedOrdinary := model.User{
+		Username:   "third-deleted-leaf",
+		Role:       common.RoleCommonUser,
+		Group:      "default",
+		UserGroups: []string{"default", "vip"},
+		Status:     common.UserStatusEnabled,
+		CreatorID:  third.Id,
+	}
+	require.NoError(t, db.Create(&deletedOrdinary).Error)
+	require.NoError(t, db.Delete(&deletedOrdinary).Error)
+
+	for _, descendant := range []model.User{secondLevel, ordinary} {
+		response = managerRequest(t, admin, http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":%q,"user_groups":["vip"]}`, descendant.Id, descendant.Username), UpdateUser)
+		assert.Contains(t, response.Body.String(), `"success":false`, "admins cannot assign groups directly to users below a third-level user")
+		groups, err := model.GetUserGroupAssignments(descendant.Id)
+		require.NoError(t, err)
+		assert.ElementsMatch(t, []string{"default", "vip"}, groups)
+	}
+
+	response = managerRequest(t, admin, http.MethodPut, "/api/user/", fmt.Sprintf(`{"id":%d,"username":%q,"user_groups":["default"]}`, third.Id, third.Username), UpdateUser)
+	require.Contains(t, response.Body.String(), `"success":true`)
+	deletedGroups, err := model.GetUserGroupAssignments(deletedOrdinary.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default"}, deletedGroups, "deleted descendants must still have revoked assignments persisted")
+	for _, descendant := range []model.User{secondLevel, ordinary} {
+		groups, err := model.GetUserGroupAssignments(descendant.Id)
+		require.NoError(t, err)
+		assert.Equal(t, []string{"default"}, groups, "removing a parent grant must prune it throughout the management tree")
+		var current model.User
+		require.NoError(t, db.First(&current, descendant.Id).Error)
+		assert.EqualValues(t, 2, current.AuthVersion, "pruned descendants must advance their authentication version")
+	}
 }
 
 func TestThirdLevelUserManagesOnlyDirectUsersAndCannotOrphanSecondLevelUsers(t *testing.T) {
@@ -1326,6 +1471,7 @@ func TestUserHierarchyScopesChildrenAndInheritsThirdLevelGroup(t *testing.T) {
 	assert.EqualValues(t, 1, filteredTotal)
 	require.Len(t, filteredRoots, 1)
 	assert.Equal(t, third.Id, filteredRoots[0].Id)
+	assert.Equal(t, []string{"default"}, filteredRoots[0].UserGroups)
 	assert.True(t, filteredRoots[0].HierarchyAutoExpand)
 	filteredChildren, filteredTotal, err := model.FindManagedUserChildren(rootScope, third.Id, grandchild.Username, "", &ordinaryRole, nil, 0, 20)
 	require.NoError(t, err)

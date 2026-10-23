@@ -444,7 +444,7 @@ func TestSecurityAccountProfileReadsPasswordStatusInOneQuery(t *testing.T) {
 			}))
 			profile, err := model.GetSelfUserById(user.Id)
 			require.NoError(t, err)
-			assert.Equal(t, 1, queries)
+			assert.Equal(t, 2, queries, "profile/password state and channel-group assignments are loaded separately")
 			assert.Equal(t, hasPassword, profile.HasPassword)
 			assert.Empty(t, profile.Password)
 			assert.Nil(t, profile.AccessToken)

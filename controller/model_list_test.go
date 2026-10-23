@@ -34,6 +34,22 @@ type userModelsResponse struct {
 	Data    []string `json:"data"`
 }
 
+type pricingResponse struct {
+	Success     bool               `json:"success"`
+	Data        []model.Pricing    `json:"data"`
+	GroupRatio  map[string]float64 `json:"group_ratio"`
+	UsableGroup map[string]string  `json:"usable_group"`
+	AutoGroups  []string           `json:"auto_groups"`
+}
+
+type userGroupsResponse struct {
+	Success bool `json:"success"`
+	Data    map[string]struct {
+		Ratio float64 `json:"ratio"`
+		Desc  string  `json:"desc"`
+	} `json:"data"`
+}
+
 func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 
@@ -49,7 +65,7 @@ func setupModelListControllerTestDB(t *testing.T) *gorm.DB {
 	model.DB = db
 	model.LOG_DB = db
 
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserGroupAssignment{}, &model.Channel{}, &model.Ability{}, &model.Model{}, &model.Vendor{}))
 
 	t.Cleanup(func() {
 		sqlDB, err := db.DB()
@@ -215,6 +231,56 @@ func TestGetUserModelsFiltersByRequestedGroup(t *testing.T) {
 	require.Empty(t, decodeUserModelsResponse(t, vipRecorder))
 }
 
+func TestGetUserModelsUsesAssignedUserGroups(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	originalSpecialGroups := specialGroups.ReadAll()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		specialGroups.Clear()
+		specialGroups.AddAll(originalSpecialGroups)
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"channel-a":1,"channel-b":1}`))
+	specialGroups.Clear()
+	specialGroups.Set("source-a", map[string]string{"+:channel-a": "Channel A", "+:retired-channel": "Retired Channel"})
+	specialGroups.Set("source-b", map[string]string{"+:channel-b": "Channel B"})
+
+	require.NoError(t, db.Create(&model.User{
+		Id:       1004,
+		Username: "multi-group-model-user",
+		Password: "password",
+		Group:    "default",
+		Status:   common.UserStatusEnabled,
+	}).Error)
+	require.NoError(t, model.ReplaceUserGroupAssignmentsTx(db, 1004, []string{"source-a", "source-b"}))
+	require.NoError(t, db.Create(&[]model.Ability{
+		{Group: "channel-a", Model: "zz-channel-a-model", ChannelId: 1, Enabled: true},
+		{Group: "channel-b", Model: "zz-channel-b-model", ChannelId: 2, Enabled: true},
+		{Group: "retired-channel", Model: "zz-retired-model", ChannelId: 3, Enabled: true},
+	}).Error)
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/user/models", nil)
+	context.Set("id", 1004)
+
+	GetUserModels(context)
+
+	assert.ElementsMatch(t, []string{"zz-channel-a-model", "zz-channel-b-model"}, decodeUserModelsResponse(t, recorder))
+
+	retiredRecorder := httptest.NewRecorder()
+	retiredContext, _ := gin.CreateTestContext(retiredRecorder)
+	retiredContext.Request = httptest.NewRequest(http.MethodGet, "/api/user/models?group=retired-channel", nil)
+	retiredContext.Set("id", 1004)
+	GetUserModels(retiredContext)
+
+	assert.Empty(t, decodeUserModelsResponse(t, retiredRecorder), "groups without a configured ratio cannot expose models")
+}
+
 func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	originalAutoGroups := setting.AutoGroups2JsonString()
 	originalUsableGroups := setting.UserUsableGroups2JSONString()
@@ -263,6 +329,130 @@ func TestGetUserModelsExpandsAutoGroupsInConfiguredOrder(t *testing.T) {
 	require.Len(t, models, 3)
 	assert.ElementsMatch(t, []string{"zz-vip-model", "zz-shared-model"}, models[:2])
 	assert.Equal(t, "zz-default-model", models[2])
+}
+
+func TestGetPricingAnonymousReturnsGlobalGroupsAndPrices(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	originalAutoGroups := setting.AutoGroups2JsonString()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
+		model.InvalidatePricingCache()
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["default"]`))
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "default", Model: "zz-anonymous-pricing-model", ChannelId: 1, Enabled: true,
+	}).Error)
+	model.InvalidatePricingCache()
+
+	recorder := httptest.NewRecorder()
+	context, _ := gin.CreateTestContext(recorder)
+	context.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+	GetPricing(context)
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	var payload pricingResponse
+	require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &payload))
+	require.True(t, payload.Success)
+	require.Contains(t, payload.UsableGroup, "default")
+	require.Contains(t, payload.GroupRatio, "default")
+	require.Contains(t, payload.AutoGroups, "default")
+	require.Contains(t, pricingByModelName(payload.Data), "zz-anonymous-pricing-model")
+}
+
+func TestPricingAndUserGroupsUsePrimaryBillingGroupForMultipleAssignments(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(originalGroupRatios))
+		model.InvalidatePricingCache()
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":3}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"default":1.5,"vip":4}}`))
+	require.NoError(t, db.Create(&model.User{
+		Id: 1002, Username: "multi-group-pricing-user", Password: "password", Group: "default",
+		Status: common.UserStatusEnabled,
+	}).Error)
+	require.NoError(t, model.ReplaceUserGroupAssignmentsTx(db, 1002, []string{"default", "vip"}))
+
+	pricingRecorder := httptest.NewRecorder()
+	pricingContext, _ := gin.CreateTestContext(pricingRecorder)
+	pricingContext.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+	pricingContext.Set("id", 1002)
+	GetPricing(pricingContext)
+
+	var pricing pricingResponse
+	require.NoError(t, common.Unmarshal(pricingRecorder.Body.Bytes(), &pricing))
+	require.True(t, pricing.Success)
+	assert.InDelta(t, 1.5, pricing.GroupRatio["default"], 0.0001)
+	assert.InDelta(t, 1.5, pricing.GroupRatio["vip"], 0.0001)
+
+	groupsRecorder := httptest.NewRecorder()
+	groupsContext, _ := gin.CreateTestContext(groupsRecorder)
+	groupsContext.Request = httptest.NewRequest(http.MethodGet, "/api/user/groups", nil)
+	groupsContext.Set("id", 1002)
+	GetUserGroups(groupsContext)
+
+	var groups userGroupsResponse
+	require.NoError(t, common.Unmarshal(groupsRecorder.Body.Bytes(), &groups))
+	require.True(t, groups.Success)
+	assert.InDelta(t, 1.5, groups.Data["default"].Ratio, 0.0001)
+	assert.InDelta(t, 1.5, groups.Data["vip"].Ratio, 0.0001)
+}
+
+func TestPricingAndUserGroupsKeepChannelRatiosForPrimaryOnlyAssignment(t *testing.T) {
+	db := setupModelListControllerTestDB(t)
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(originalGroupRatios))
+		model.InvalidatePricingCache()
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","vip":"VIP"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":3}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"default":1.5,"vip":4}}`))
+	require.NoError(t, db.Create(&model.User{
+		Id: 1003, Username: "single-group-pricing-user", Password: "password", Group: "default",
+		Status: common.UserStatusEnabled,
+	}).Error)
+	require.NoError(t, model.ReplaceUserGroupAssignmentsTx(db, 1003, []string{"default"}))
+
+	pricingRecorder := httptest.NewRecorder()
+	pricingContext, _ := gin.CreateTestContext(pricingRecorder)
+	pricingContext.Request = httptest.NewRequest(http.MethodGet, "/api/pricing", nil)
+	pricingContext.Set("id", 1003)
+	GetPricing(pricingContext)
+
+	var pricing pricingResponse
+	require.NoError(t, common.Unmarshal(pricingRecorder.Body.Bytes(), &pricing))
+	require.True(t, pricing.Success)
+	assert.InDelta(t, 1.5, pricing.GroupRatio["default"], 0.0001)
+	assert.InDelta(t, 4, pricing.GroupRatio["vip"], 0.0001)
+
+	groupsRecorder := httptest.NewRecorder()
+	groupsContext, _ := gin.CreateTestContext(groupsRecorder)
+	groupsContext.Request = httptest.NewRequest(http.MethodGet, "/api/user/groups", nil)
+	groupsContext.Set("id", 1003)
+	GetUserGroups(groupsContext)
+
+	var groups userGroupsResponse
+	require.NoError(t, common.Unmarshal(groupsRecorder.Body.Bytes(), &groups))
+	require.True(t, groups.Success)
+	assert.InDelta(t, 1.5, groups.Data["default"].Ratio, 0.0001)
+	assert.InDelta(t, 4, groups.Data["vip"].Ratio, 0.0001)
 }
 
 func TestListModelsIncludesTieredBillingModel(t *testing.T) {
@@ -339,7 +529,6 @@ func TestListModelsUsesAdvancedCustomEndpointTypesFromPricingCache(t *testing.T)
 		Group:    "default",
 		Status:   common.UserStatusEnabled,
 	}).Error)
-
 	channel := &model.Channel{
 		Id:     701,
 		Type:   constant.ChannelTypeAdvancedCustom,

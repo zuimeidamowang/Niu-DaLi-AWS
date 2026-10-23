@@ -560,6 +560,7 @@ func buildSelfUserData(user *model.User) map[string]any {
 		"wechat_id":         user.WeChatId,
 		"telegram_id":       user.TelegramId,
 		"group":             user.Group,
+		"user_groups":       user.UserGroups,
 		"quota":             user.Quota,
 		"used_quota":        user.UsedQuota,
 		"request_count":     user.RequestCount,
@@ -681,7 +682,8 @@ func GetUserModels(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
-	groups := service.GetUserUsableGroups(user.Group)
+	groups := service.GetUserChannelGroupsForUser(user.Group, user.UserGroups)
+	userUsableGroups := service.GetUserUsableGroupsForUser(user.Group, user.UserGroups)
 	group := c.Query("group")
 	var groupsToQuery []string
 	switch {
@@ -690,8 +692,8 @@ func GetUserModels(c *gin.Context) {
 			groupsToQuery = append(groupsToQuery, g)
 		}
 	case group == "auto":
-		if _, ok := groups[group]; ok {
-			groupsToQuery = service.GetUserAutoGroup(user.Group)
+		if _, ok := userUsableGroups[group]; ok {
+			groupsToQuery = service.GetUserAutoGroupForUser(user.Group, user.UserGroups)
 		}
 	default:
 		if _, ok := groups[group]; ok {
@@ -744,6 +746,12 @@ func UpdateUser(c *gin.Context) {
 		common.ApiErrorMsg(c, "用户分组不存在")
 		return
 	}
+	for _, group := range updatedUser.UserGroups {
+		if !service.IsKnownUserGroup(group) {
+			common.ApiErrorMsg(c, "用户分组不存在")
+			return
+		}
+	}
 	if common.IsDelegatedUserManager(scope.OperatorRole) {
 		if updatedUser.CreatorID != 0 || updatedUser.AdminPermissions != nil || (updatedUser.Group != "" && updatedUser.Group != originUser.Group) {
 			common.ApiErrorI18n(c, i18n.MsgInvalidParams)
@@ -764,6 +772,7 @@ func UpdateUser(c *gin.Context) {
 	updatePassword := updatedUser.Password != ""
 	authzTouched := false
 	var inheritedGroupChangedIDs []int
+	var assignmentChangedIDs []int
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {
 		locked, err := scope.LockManagedUser(tx, updatedUser.Id, false)
 		if err != nil {
@@ -786,6 +795,40 @@ func UpdateUser(c *gin.Context) {
 		}
 		if common.IsDelegatedUserManager(scope.OperatorRole) {
 			updatedUser.Group = locked.Group
+		}
+		if updatedUser.UserGroups != nil {
+			currentGroups, err := model.GetUserGroupAssignmentsTx(tx, locked.Id)
+			if err != nil {
+				return err
+			}
+			if scope.OperatorRole >= common.RoleAdminUser && locked.Role != common.RoleThirdLevelUser {
+				inherited, err := model.IsThirdLevelUserDescendantTx(tx, locked.Id)
+				if err != nil {
+					return err
+				}
+				if inherited && !model.SameUserGroupAssignments(updatedUser.UserGroups, currentGroups) {
+					return model.ErrInheritedUserGroup
+				}
+			}
+			if common.IsDelegatedUserManager(scope.OperatorRole) {
+				managerGroups, err := model.GetEffectiveUserGroupAssignmentsTx(tx, scope.OperatorID)
+				if err != nil {
+					return err
+				}
+				if !model.UserGroupAssignmentsSubset(updatedUser.UserGroups, managerGroups) {
+					return model.ErrUserManagementPermission
+				}
+			}
+			changed, err := model.SetUserGroupAssignmentsTx(tx, locked.Id, updatedUser.UserGroups)
+			if err != nil {
+				return err
+			}
+			if changed {
+				assignmentChangedIDs, err = model.PruneDescendantUserGroupAssignmentsTx(tx, locked.Id, updatedUser.UserGroups)
+				if err != nil {
+					return err
+				}
+			}
 		}
 		if err := updatedUser.EditWithTx(tx, updatePassword); err != nil {
 			return err
@@ -818,6 +861,11 @@ func UpdateUser(c *gin.Context) {
 			postCommitErrors = append(postCommitErrors, err)
 		}
 	}
+	for _, userID := range assignmentChangedIDs {
+		if err := model.PublishUserAuthCache(userID); err != nil {
+			postCommitErrors = append(postCommitErrors, err)
+		}
+	}
 	if updatedUser.AuthVersion > originUser.AuthVersion {
 		if _, err := model.RevokeAllUserSessions(updatedUser.Id, "admin_user_update"); err != nil {
 			postCommitErrors = append(postCommitErrors, err)
@@ -825,6 +873,11 @@ func UpdateUser(c *gin.Context) {
 	}
 	for _, userID := range inheritedGroupChangedIDs {
 		if _, err := model.RevokeAllUserSessions(userID, "admin_inherited_group_update"); err != nil {
+			postCommitErrors = append(postCommitErrors, err)
+		}
+	}
+	for _, userID := range assignmentChangedIDs {
+		if _, err := model.RevokeAllUserSessions(userID, "user_group_assignment_update"); err != nil {
 			postCommitErrors = append(postCommitErrors, err)
 		}
 	}
@@ -1123,6 +1176,16 @@ func CreateUser(c *gin.Context) {
 		common.ApiErrorI18n(c, i18n.MsgUserCannotCreateHigherLevel)
 		return
 	}
+	if user.Group != "" && !service.IsKnownUserGroup(user.Group) {
+		common.ApiErrorMsg(c, "用户分组不存在")
+		return
+	}
+	for _, group := range user.UserGroups {
+		if !service.IsKnownUserGroup(group) {
+			common.ApiErrorMsg(c, "用户分组不存在")
+			return
+		}
+	}
 	canCreateManagedRole := user.Role == common.RoleCommonUser || (myRole == common.RoleThirdLevelUser && user.Role == common.RoleUserManager)
 	if common.IsDelegatedUserManager(myRole) && (!canCreateManagedRole || user.CreatorID != 0 || user.AdminPermissions != nil || user.Group != "" || user.Quota != 0) {
 		common.ApiErrorI18n(c, i18n.MsgInvalidParams)
@@ -1134,6 +1197,8 @@ func CreateUser(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 		Role:        user.Role, // 保持管理员设置的角色
+		Group:       user.Group,
+		UserGroups:  user.UserGroups,
 	}
 	authzTouched := false
 	if err := model.DB.Transaction(func(tx *gorm.DB) error {

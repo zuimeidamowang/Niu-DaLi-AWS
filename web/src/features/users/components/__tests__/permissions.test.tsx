@@ -58,6 +58,7 @@ function renderPermissions(
     username: 'operator',
     role: viewerRole,
     group: 'team',
+    user_groups: ['team', 'sales'],
     quota: 5000000,
   })
   vi.spyOn(api, 'get').mockImplementation(async (url) => {
@@ -183,6 +184,9 @@ it('admin cannot change a descendant user group inherited from a third-level use
   await screen.findByDisplayValue('My child')
   expect(screen.getByRole('combobox', { name: 'Group' })).toBeDisabled()
   expect(
+    screen.getByRole('combobox', { name: 'Channel Access Groups' })
+  ).toBeDisabled()
+  expect(
     screen.getByText('Group is inherited from the third-level user.')
   ).toBeVisible()
 })
@@ -204,6 +208,34 @@ const child: User = {
   creator_id: 1,
   group: 'team',
 }
+
+it('delegated managers can remove an access group from a directly managed child', async () => {
+  const put = vi
+    .spyOn(api, 'put')
+    .mockResolvedValue({ data: { success: true } })
+  const managedChild = {
+    ...child,
+    user_groups: ['team', 'sales'],
+  }
+  renderPermissions(6, undefined, managedChild)
+  await screen.findByDisplayValue('My child')
+
+  const accessGroups = screen.getByRole('combobox', {
+    name: 'Channel Access Groups',
+  })
+  await userEvent.click(accessGroups)
+  await userEvent.click(await screen.findByRole('option', { name: 'sales' }))
+  await userEvent.keyboard('{Escape}')
+  expect(screen.queryByText('sales')).not.toBeInTheDocument()
+
+  await userEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      '/api/user/',
+      expect.objectContaining({ id: managedChild.id, user_groups: ['team'] })
+    )
+  )
+})
 
 it.each([
   { viewerRole: 5, user: child },
@@ -557,6 +589,7 @@ it('user manager creates only an ordinary user without a role selector or global
       display_name: 'new-child',
       password: 'child-password',
       role: 1,
+      user_groups: ['team', 'sales'],
     })
   )
 })

@@ -88,6 +88,7 @@ type RelayInfo struct {
 	UserId            int
 	UsingGroup        string // 使用的分组，当auto跨分组重试时，会变动
 	UserGroup         string // 用户所在分组
+	UserGroups        []string
 	TokenUnlimited    bool
 	StartTime         time.Time
 	FirstResponseTime time.Time
@@ -566,6 +567,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	//paramOverride := common.GetContextKeyStringMap(c, constant.ContextKeyChannelParamOverride)
 
 	tokenGroup := common.GetContextKeyString(c, constant.ContextKeyTokenGroup)
+	userGroups, _ := common.GetContextKeyType[[]string](c, constant.ContextKeyUserGroups)
 	// 当令牌分组为空时，表示使用用户分组
 	if tokenGroup == "" {
 		tokenGroup = common.GetContextKeyString(c, constant.ContextKeyUserGroup)
@@ -599,6 +601,7 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 		UserId:     common.GetContextKeyInt(c, constant.ContextKeyUserId),
 		UsingGroup: common.GetContextKeyString(c, constant.ContextKeyUsingGroup),
 		UserGroup:  common.GetContextKeyString(c, constant.ContextKeyUserGroup),
+		UserGroups: userGroups,
 		UserQuota:  common.GetContextKeyInt(c, constant.ContextKeyUserQuota),
 		UserEmail:  common.GetContextKeyString(c, constant.ContextKeyUserEmail),
 
@@ -647,6 +650,20 @@ func genBaseRelayInfo(c *gin.Context, request dto.Request) *RelayInfo {
 	}
 
 	return info
+}
+
+// GetBillingGroup keeps billing on the primary user group when channel-group
+// assignments differ from that group. Existing single-group users retain
+// token-group billing behavior.
+func (info *RelayInfo) GetBillingGroup() string {
+	if info == nil {
+		return ""
+	}
+	if info.UserGroup != "" && info.UserGroups != nil &&
+		(len(info.UserGroups) != 1 || info.UserGroups[0] != info.UserGroup) {
+		return info.UserGroup
+	}
+	return info.UsingGroup
 }
 
 func cloneRequestHeaders(c *gin.Context) map[string]string {

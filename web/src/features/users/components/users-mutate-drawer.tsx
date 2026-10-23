@@ -19,7 +19,7 @@ For commercial licensing, please contact support@quantumnous.com
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
@@ -31,6 +31,7 @@ import {
   sideDrawerFormClassName,
   sideDrawerHeaderClassName,
 } from '@/components/drawer-layout'
+import { MultiSelect } from '@/components/multi-select'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Combobox } from '@/components/ui/combobox'
@@ -90,6 +91,7 @@ import {
   getPermissionCatalog,
 } from '../api'
 import {
+  DEFAULT_GROUP,
   BINDING_FIELDS,
   ERROR_MESSAGES,
   SUCCESS_MESSAGES,
@@ -130,6 +132,14 @@ export function UsersMutateDrawer({
   const isThirdLevelUser = currentUser?.role === ROLE.THIRD_LEVEL_USER
   const hasAdminAccess = (currentUser?.role ?? 0) >= ROLE.ADMIN
   const isDelegatedManager = isDelegatedUserManager(currentUser?.role)
+  const currentUserGroups = useMemo(
+    () => currentUser?.user_groups ?? [currentUser?.group || DEFAULT_GROUP],
+    [currentUser?.group, currentUser?.user_groups]
+  )
+  const initialUserGroups = useMemo(
+    () => (isDelegatedManager ? currentUserGroups : [DEFAULT_GROUP]),
+    [currentUserGroups, isDelegatedManager]
+  )
   const [groupInherited, setGroupInherited] = useState(
     currentRow?.group_inherited ?? false
   )
@@ -155,7 +165,7 @@ export function UsersMutateDrawer({
   })
 
   const userGroups = isDelegatedManager
-    ? [currentUser?.group || 'default']
+    ? currentUserGroups
     : groupsData?.data || []
 
   // Permission catalog is owned by the backend; fetched once and reused.
@@ -192,13 +202,16 @@ export function UsersMutateDrawer({
         )
     } else if (open && !isUpdate) {
       setGroupInherited(false)
-      // For create, reset to defaults
-      form.reset(USER_FORM_DEFAULT_VALUES)
     }
     return () => {
       cancelled = true
     }
   }, [open, isUpdate, currentRow, canViewCurrentUser, form, t])
+
+  useEffect(() => {
+    if (!open || isUpdate) return
+    form.reset({ ...USER_FORM_DEFAULT_VALUES, user_groups: initialUserGroups })
+  }, [open, isUpdate, form, initialUserGroups])
 
   const { meta: currencyMeta } = getCurrencyDisplay()
   const currencyLabel = getCurrencyLabel()
@@ -207,6 +220,7 @@ export function UsersMutateDrawer({
   const currentQuotaRaw = form.watch('quota_dollars') || 0
   const selectedRole = form.watch('role')
   const selectedUserGroup = form.watch('group')
+  const selectedUserGroups = form.watch('user_groups') ?? []
   const userGroupOptions = [...userGroups]
   if (
     !isDelegatedManager &&
@@ -214,6 +228,12 @@ export function UsersMutateDrawer({
     !userGroupOptions.includes(selectedUserGroup)
   ) {
     userGroupOptions.push(selectedUserGroup)
+  }
+  const userAccessGroupOptions = [...userGroups]
+  for (const group of selectedUserGroups) {
+    if (!userAccessGroupOptions.includes(group)) {
+      userAccessGroupOptions.push(group)
+    }
   }
   const canEditAdminPermissions =
     currentUser?.role === ROLE.SUPER_ADMIN && !isReadOnly
@@ -471,6 +491,44 @@ export function UsersMutateDrawer({
                     )}
                   />
                 )}
+              </SideDrawerSection>
+
+              <SideDrawerSection>
+                <h3 className='text-sm font-medium'>
+                  {t('Channel Access Groups')}
+                </h3>
+                <FormField
+                  control={form.control}
+                  name='user_groups'
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>{t('Channel Access Groups')}</FormLabel>
+                      <FormControl>
+                        <MultiSelect
+                          options={userAccessGroupOptions.map((group) => ({
+                            value: group,
+                            label: group,
+                          }))}
+                          selected={field.value ?? []}
+                          onChange={field.onChange}
+                          ariaLabel={t('Channel Access Groups')}
+                          disabled={
+                            isReadOnly ||
+                            !canEditUser ||
+                            (hasAdminAccess && groupInherited)
+                          }
+                          className='w-full'
+                        />
+                      </FormControl>
+                      <FormDescription>
+                        {t(
+                          'Groups this user can access. Billing continues to use the primary group.'
+                        )}
+                      </FormDescription>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </SideDrawerSection>
 
               {/* Group & Quota Settings (Update only) */}

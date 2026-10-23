@@ -338,6 +338,7 @@ func migrateDB() error {
 		&Channel{},
 		&Token{},
 		&User{},
+		&UserGroupAssignment{},
 		&UserSession{},
 		&AuthFlow{},
 		&ExternalIdentityClaim{},
@@ -375,6 +376,9 @@ func migrateDB() error {
 		&AuthzRole{},
 	)
 	if err != nil {
+		return err
+	}
+	if err := InitializeUserGroupAssignments(); err != nil {
 		return err
 	}
 	if err := InitializeUserAuthVersions(); err != nil {

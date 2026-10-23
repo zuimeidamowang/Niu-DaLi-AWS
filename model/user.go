@@ -99,6 +99,7 @@ type User struct {
 	UsedQuota            int                        `json:"used_quota" gorm:"type:int;default:0;column:used_quota"` // used quota
 	RequestCount         int                        `json:"request_count" gorm:"type:int;default:0;"`               // request number
 	Group                string                     `json:"group" gorm:"type:varchar(64);default:'default'"`
+	UserGroups           []string                   `json:"user_groups" gorm:"-"`
 	AffCode              string                     `json:"aff_code" gorm:"type:varchar(32);column:aff_code;uniqueIndex"`
 	AffCount             int                        `json:"aff_count" gorm:"type:int;default:0;column:aff_count"`
 	AffQuota             int                        `json:"aff_quota" gorm:"type:int;default:0;column:aff_quota"`           // 邀请剩余额度
@@ -119,9 +120,14 @@ type User struct {
 }
 
 func (user *User) ToBaseUser() *UserBase {
+	userGroups := slices.Clone(user.UserGroups)
+	if userGroups == nil {
+		userGroups = []string{user.Group}
+	}
 	cache := &UserBase{
 		Id:          user.Id,
 		Group:       user.Group,
+		UserGroups:  userGroups,
 		Quota:       user.Quota,
 		Status:      user.Status,
 		Role:        user.Role,
@@ -132,6 +138,20 @@ func (user *User) ToBaseUser() *UserBase {
 		CacheSchema: userCacheSchemaVersion,
 	}
 	return cache
+}
+
+func (user *User) AfterCreate(tx *gorm.DB) error {
+	if !tx.Migrator().HasTable(&UserGroupAssignment{}) {
+		return nil
+	}
+	if user.UserGroups == nil {
+		group := user.Group
+		if group == "" {
+			group = "default"
+		}
+		user.UserGroups = []string{group}
+	}
+	return ReplaceUserGroupAssignmentsTx(tx, user.Id, user.UserGroups)
 }
 
 func (user *User) GetAccessToken() string {
@@ -596,6 +616,15 @@ func (scope UserManagementScope) InsertUser(tx *gorm.DB, user *User) error {
 		}
 		user.CreatorID = manager.Id
 		user.Group = manager.Group
+		managerGroups, err := GetEffectiveUserGroupAssignmentsTx(tx, manager.Id)
+		if err != nil {
+			return err
+		}
+		if user.UserGroups == nil {
+			user.UserGroups = managerGroups
+		} else if !userGroupAssignmentsSubset(user.UserGroups, managerGroups) {
+			return ErrUserManagementPermission
+		}
 	} else if scope.OperatorRole < common.RoleAdminUser || user.Role >= scope.OperatorRole {
 		return ErrUserManagementPermission
 	}
@@ -668,6 +697,9 @@ func FindManagedUserTreeRoots(scope UserManagementScope, keyword, group string, 
 		if err := order.Apply(query.Order("role DESC").Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error; err != nil {
 			return err
 		}
+		if err := loadUserGroupAssignments(tx, users); err != nil {
+			return err
+		}
 		for i := range users {
 			users[i].HierarchyAutoExpand = rootExpand[users[i].Id]
 		}
@@ -729,6 +761,9 @@ func FindManagedUserChildren(scope UserManagementScope, parentID int, keyword, g
 		if err := order.Apply(query.Omit("password", "access_token")).Limit(num).Offset(startIdx).Find(&users).Error; err != nil {
 			return err
 		}
+		if err := loadUserGroupAssignments(tx, users); err != nil {
+			return err
+		}
 		for i := range users {
 			users[i].HierarchyAutoExpand = childIDs[users[i].Id]
 		}
@@ -758,6 +793,9 @@ func findManagedUsers(scope UserManagementScope, parentID int, rootsOnly bool, k
 		}
 		if len(users) == 0 {
 			return nil
+		}
+		if err := loadUserGroupAssignments(tx, users); err != nil {
+			return err
 		}
 		inherited := scope.OperatorRole == common.RoleThirdLevelUser
 		if scope.OperatorRole == common.RoleUserManager {
@@ -973,6 +1011,9 @@ func GetUserById(id int, selectAll bool) (*User, error) {
 	} else {
 		err = DB.Omit("password", "access_token").First(&user, "id = ?", id).Error
 	}
+	if err == nil {
+		err = loadUserGroupAssignments(DB, []*User{&user})
+	}
 	return &user, err
 }
 
@@ -985,11 +1026,18 @@ func GetUserByIdInManagementScope(id int, scope UserManagementScope, selectAll b
 	if !selectAll {
 		query = query.Omit("password", "access_token")
 	}
-	return &user, query.First(&user, "id = ?", id).Error
+	if err := query.First(&user, "id = ?", id).Error; err != nil {
+		return nil, err
+	}
+	if err := loadUserGroupAssignments(DB, []*User{&user}); err != nil {
+		return nil, err
+	}
+	return &user, nil
 }
 
 // GetSelfUserById reads dashboard profile data and password existence in one
-// query. The password hash and management access token are never selected.
+// profile query, then loads effective channel-group assignments. The password
+// hash and management access token are never selected.
 func GetSelfUserById(id int) (*User, error) {
 	if id == 0 {
 		return nil, errors.New("id 为空！")
@@ -1002,11 +1050,14 @@ func GetSelfUserById(id int) (*User, error) {
 		"id", "username", "display_name", "role", "status", "email",
 		"github_id", "discord_id", "oidc_id", "wechat_id", "telegram_id",
 		"group", "quota", "used_quota", "request_count", "aff_code", "aff_count",
-		"aff_quota", "aff_history", "inviter_id", "linux_do_id", "setting",
+		"aff_quota", "aff_history", "inviter_id", "creator_id", "linux_do_id", "setting",
 		"stripe_customer", "auth_version",
 		"CASE WHEN password <> '' THEN 1 ELSE 0 END AS has_password",
 	}).First(&profile, "id = ?", id).Error
 	profile.User.HasPassword = profile.HasPassword
+	if err == nil {
+		err = loadUserGroupAssignments(DB, []*User{&profile.User})
+	}
 	return &profile.User, err
 }
 
@@ -1088,6 +1139,9 @@ func (user *User) TransferAffQuotaToQuota(quota int) error {
 }
 
 func (user *User) prepareForInsert(tx *gorm.DB) error {
+	if user.Group == "" {
+		user.Group = "default"
+	}
 	user.Email = NormalizeEmail(user.Email)
 	if err := ensureEmailAvailableWithTx(tx, user.Email, 0); err != nil {
 		return err
@@ -1321,7 +1375,10 @@ func (user *User) UpdateWithTx(tx *gorm.DB, updatePassword bool) error {
 	).Updates(newUser).Error; err != nil {
 		return err
 	}
-	return tx.First(user, user.Id).Error
+	if err := tx.First(user, user.Id).Error; err != nil {
+		return err
+	}
+	return loadUserGroupAssignments(tx, []*User{user})
 }
 
 func (user *User) Edit(updatePassword bool) error {
@@ -1378,7 +1435,10 @@ func (user *User) EditWithTx(tx *gorm.DB, updatePassword bool) error {
 	if err = tx.Model(&current).Updates(updates).Error; err != nil {
 		return err
 	}
-	return tx.First(user, user.Id).Error
+	if err := tx.First(user, user.Id).Error; err != nil {
+		return err
+	}
+	return loadUserGroupAssignments(tx, []*User{user})
 }
 
 func (user *User) ClearBinding(bindingType string) error {
@@ -1414,6 +1474,9 @@ func (user *User) ClearBinding(bindingType string) error {
 	}
 
 	if err := DB.Where("id = ?", user.Id).First(user).Error; err != nil {
+		return err
+	}
+	if err := loadUserGroupAssignments(DB, []*User{user}); err != nil {
 		return err
 	}
 
@@ -1529,6 +1592,9 @@ func (user *User) HardDelete(scopes ...UserManagementScope) error {
 			}
 		}
 		if err := deleteUserAuthenticationData(tx, user.Id); err != nil {
+			return err
+		}
+		if err := tx.Where("user_id = ?", user.Id).Delete(&UserGroupAssignment{}).Error; err != nil {
 			return err
 		}
 		return tx.Unscoped().Delete(user).Error

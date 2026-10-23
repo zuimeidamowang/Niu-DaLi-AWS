@@ -92,3 +92,45 @@ func TestLegacyUserGroupCompatibilityAndExplicitChannelVisibilityDenial(t *testi
 	assert.False(t, IsUserSelectableGroup("default", "default"))
 	assert.Contains(t, GetUserGroupNames(), "channel-only")
 }
+
+func TestAssignedUserGroupsUnionChannelPermissionsAndKeepExclusionsLocal(t *testing.T) {
+	originalAutoGroups := setting.AutoGroups2JsonString()
+	originalUsableGroups := setting.UserUsableGroups2JSONString()
+	originalRatios := ratio_setting.GroupRatio2JSONString()
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	originalSpecialGroups := specialGroups.ReadAll()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateAutoGroupsByJsonString(originalAutoGroups))
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalRatios))
+		specialGroups.Clear()
+		specialGroups.AddAll(originalSpecialGroups)
+	})
+
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	require.NoError(t, setting.UpdateAutoGroupsByJsonString(`["channel-a","channel-b"]`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"channel-a":1,"channel-b":1,"shared":1}`))
+	specialGroups.Clear()
+	specialGroups.Set("source-a", map[string]string{"+:channel-a": "Channel A", "+:retired": "Retired", "-:shared": ""})
+	specialGroups.Set("source-b", map[string]string{"+:channel-b": "Channel B", "+:shared": "Shared"})
+
+	usable := GetUserUsableGroupsForUser("default", []string{"source-a", "source-b"})
+
+	assert.Contains(t, usable, "channel-a")
+	assert.Contains(t, usable, "channel-b")
+	assert.Contains(t, usable, "shared", "source-b grants a group excluded by source-a")
+	assert.NotContains(t, GetUserUsableGroupsForUser("default", []string{"source-a"}), "shared")
+	assert.True(t, IsUserSelectableGroupForUser("default", "channel-b", []string{"source-a", "source-b"}))
+	assert.False(t, IsUserSelectableGroupForUser("default", "channel-b", []string{"source-a"}))
+	channelGroups := GetUserChannelGroupsForUser("default", []string{"source-a", "source-b"})
+	assert.Contains(t, channelGroups, "channel-a")
+	assert.Contains(t, channelGroups, "shared")
+	assert.NotContains(t, channelGroups, "retired")
+	assert.NotContains(t, channelGroups, "auto")
+	assert.Equal(t, []string{"channel-a", "channel-b"}, GetUserAutoGroupForUser("default", []string{"source-a", "source-b"}))
+	assert.Empty(t, GetUserUsableGroupsForUser("default", []string{}), "an explicit empty assignment must not fall back to the billing group")
+
+	ctx := newRequestAutoGroupsContext()
+	common.SetContextKey(ctx, constant.ContextKeyUserGroups, []string{})
+	assert.Empty(t, GetRequestAutoGroups(ctx, "default"), "a present empty assignment must fail closed")
+}

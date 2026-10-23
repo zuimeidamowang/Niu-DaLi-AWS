@@ -111,6 +111,74 @@ func TestFixedPricePreConsumeAndRealtimeRejection(t *testing.T) {
 	}
 }
 
+func TestMultipleUserGroupsKeepBillingOnPrimaryGroup(t *testing.T) {
+	originalModelRatios := ratio_setting.ModelRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	originalGroupGroupRatios := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(originalGroupGroupRatios))
+	})
+
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"multi-group-billing-model":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":3}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{"default":{"default":1.5,"vip":4}}`))
+
+	for _, tc := range []struct {
+		name           string
+		usingGroup     string
+		userGroups     []string
+		autoGroup      string
+		wantBilling    float64
+		wantUsingGroup string
+	}{
+		{
+			name:           "fixed channel group does not change billing",
+			usingGroup:     "vip",
+			userGroups:     []string{"default", "vip"},
+			wantBilling:    1.5,
+			wantUsingGroup: "vip",
+		},
+		{
+			name:           "auto-selected channel group does not change billing",
+			usingGroup:     "default",
+			userGroups:     []string{"default", "vip"},
+			autoGroup:      "vip",
+			wantBilling:    1.5,
+			wantUsingGroup: "vip",
+		},
+		{
+			name:           "single-group users keep legacy token-group billing",
+			usingGroup:     "vip",
+			userGroups:     []string{"default"},
+			wantBilling:    4,
+			wantUsingGroup: "vip",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tc.autoGroup != "" {
+				ctx.Set("auto_group", tc.autoGroup)
+			}
+			info := &relaycommon.RelayInfo{
+				OriginModelName: "multi-group-billing-model",
+				UserGroup:       "default",
+				UserGroups:      tc.userGroups,
+				UsingGroup:      tc.usingGroup,
+			}
+
+			priceData, err := ModelPriceHelper(ctx, info, 1000, &types.TokenCountMeta{})
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantUsingGroup, info.UsingGroup)
+			assert.Equal(t, tc.wantBilling, priceData.GroupRatioInfo.GroupRatio)
+			assert.Equal(t, int(tc.wantBilling*1000), priceData.QuotaToPreConsume)
+		})
+	}
+}
+
 func TestModelPriceHelperTieredInputPreConsumeMultiplier(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
