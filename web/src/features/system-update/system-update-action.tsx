@@ -32,6 +32,7 @@ import { ROLE } from '@/lib/roles'
 import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 
+import { parseSystemVersion } from './releases'
 import { SystemUpdateDialog } from './system-update-dialog'
 import { useSystemUpdate } from './use-system-update'
 
@@ -55,7 +56,14 @@ function AdminSystemUpdateAction(props: SystemUpdateActionProps) {
   const [open, setOpen] = useState(false)
   const compact = props.compact ?? true
   const versionPresentation = props.presentation === 'version'
-  const version = update.currentVersion?.trim() || t('Unknown version')
+  const currentVersion = update.currentVersion?.trim() || t('Unknown version')
+  const releaseVersion = update.release?.tag_name?.trim()
+  const currentVersionIsSemver = Boolean(
+    parseSystemVersion(update.currentVersion)
+  )
+  const version = currentVersionIsSemver
+    ? currentVersion
+    : releaseVersion || t('Unknown version')
   const label = update.shouldNotify
     ? t('Update available')
     : t('Check for updates')
@@ -69,10 +77,12 @@ function AdminSystemUpdateAction(props: SystemUpdateActionProps) {
   }
   const updateAnnouncement = update.shouldNotify ? description : ''
   if (versionPresentation) {
-    const versionDescription = t(
-      'System updates, current version: {{version}}',
-      { version }
-    )
+    const versionDescription =
+      !currentVersionIsSemver && releaseVersion
+        ? `${t('Latest version')}: ${releaseVersion}`
+        : t('System updates, current version: {{version}}', {
+            version: currentVersion,
+          })
     description =
       update.shouldNotify || update.snapshot?.error
         ? `${versionDescription}\n${description}`
