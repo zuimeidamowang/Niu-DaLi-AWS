@@ -40,17 +40,17 @@ export function CTA(props: CTAProps) {
     : t('Get Started')
 
   return (
-    <section className='niu-dali-cta relative isolate overflow-hidden px-5 py-20 sm:px-8 md:py-24 lg:px-10'>
-      <img
-        src={logo}
-        alt=''
-        aria-hidden='true'
-        className='absolute top-1/2 right-[8%] -z-10 size-64 -translate-y-1/2 opacity-[0.08] md:size-80'
-      />
-      <AnimateInView className='mx-auto flex max-w-6xl flex-col justify-between gap-10 md:flex-row md:items-end'>
-        <div className='max-w-2xl'>
-          <p className='niu-dali-eyebrow text-sm font-medium'>Niu Dali</p>
-          <h2 className='mt-4 text-3xl leading-tight font-semibold text-balance md:text-5xl'>
+    <section className='bg-background px-5 py-16 sm:px-8 md:py-20 lg:px-10'>
+      <AnimateInView className='niu-dali-cta border-border relative isolate mx-auto flex max-w-6xl flex-col justify-between gap-8 overflow-hidden rounded-xl border p-6 sm:p-10 lg:flex-row lg:items-center lg:p-12'>
+        <img
+          src={logo}
+          alt=''
+          aria-hidden='true'
+          className='pointer-events-none absolute top-1/2 right-8 -z-10 size-64 -translate-y-1/2 opacity-[0.035]'
+        />
+        <div className='max-w-xl'>
+          <p className='niu-dali-eyebrow text-sm font-semibold'>Niu Dali</p>
+          <h2 className='mt-3 text-3xl leading-tight font-semibold tracking-tight text-balance md:text-4xl'>
             {t('Ready for your next request?')}
           </h2>
           <p className='niu-dali-hero-muted mt-4 max-w-xl text-sm leading-7 sm:text-base'>
@@ -63,7 +63,7 @@ export function CTA(props: CTAProps) {
         <div className='flex shrink-0 flex-wrap gap-3'>
           <Button
             size='lg'
-            className='niu-dali-primary-action h-11 px-5'
+            className='niu-dali-primary-action h-11 gap-2 px-5 shadow-sm'
             render={<Link to={primaryDestination} />}
           >
             {primaryLabel}

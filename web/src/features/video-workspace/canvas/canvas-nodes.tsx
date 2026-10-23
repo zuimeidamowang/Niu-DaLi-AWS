@@ -107,8 +107,8 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
   return (
     <article
       className={cn(
-        'w-80 rounded-2xl border border-neutral-200 bg-white text-neutral-900 shadow-sm dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100',
-        props.selected && 'ring-2 ring-blue-500'
+        'bg-card text-card-foreground border-border/80 w-80 rounded-xl border shadow-xs',
+        props.selected && 'ring-primary ring-2'
       )}
       aria-label={title}
     >
@@ -117,7 +117,7 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
           type='target'
           position={Position.Left}
           id='input'
-          className='!size-3 !border-2 !border-white !bg-neutral-400'
+          className='!border-card !bg-muted-foreground !size-3 !border-2'
           aria-label={t('Connect input')}
         />
       )}
@@ -125,11 +125,11 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
         type='source'
         position={Position.Right}
         id='output'
-        className='!size-3 !border-2 !border-white !bg-blue-500'
+        className='!border-card !bg-primary !size-3 !border-2'
         aria-label={t('Connect output')}
       />
-      <header className='flex items-center gap-2 border-b border-neutral-100 px-4 py-3 dark:border-neutral-800'>
-        <Icon className='size-4 text-neutral-500' aria-hidden='true' />
+      <header className='border-border/70 flex items-center gap-2 border-b px-4 py-3'>
+        <Icon className='text-muted-foreground size-4' aria-hidden='true' />
         <h3 className='flex-1 text-sm font-medium'>{title}</h3>
         <Button
           className='nodrag nopan'
@@ -187,11 +187,11 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
             </Field>
             {busy && <Spinner aria-label={t('Uploading...')} />}
             {props.data.filename && (
-              <p className='truncate text-xs text-neutral-500'>
+              <p className='text-muted-foreground truncate text-xs'>
                 {props.data.filename}
               </p>
             )}
-            <p className='text-xs text-neutral-500'>
+            <p className='text-muted-foreground text-xs'>
               {t('Connect this image to a video generation node.')}
             </p>
           </>
@@ -337,7 +337,7 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
                 </Field>
               </div>
               {model && (
-                <p className='text-xs text-neutral-500'>
+                <p className='text-muted-foreground text-xs'>
                   {t('Reference limits: {{images}} images, {{videos}} videos', {
                     images:
                       model.max_reference_images ??
@@ -361,7 +361,10 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
               </p>
             )}
             {pendingClaim && (
-              <div role='status' className='space-y-2 text-xs text-neutral-500'>
+              <div
+                role='status'
+                className='text-muted-foreground space-y-2 text-xs'
+              >
                 <p>
                   {t(
                     'Submission is being reconciled. It will not be sent again.'
@@ -400,7 +403,7 @@ function CanvasNodeCard(props: NodeProps<CanvasNode>) {
                 {task.fail_reason && (
                   <p className='text-destructive text-xs'>{task.fail_reason}</p>
                 )}
-                <p className='truncate font-mono text-[10px] text-neutral-500'>
+                <p className='text-muted-foreground truncate font-mono text-[10px]'>
                   {task.task_id}
                 </p>
               </div>

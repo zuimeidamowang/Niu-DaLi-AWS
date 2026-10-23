@@ -164,9 +164,9 @@ export function ModelsSection(props: ModelsSectionProps) {
   }, [chartGridColor, chartTextColor, orderedPoints, t])
 
   return (
-    <section className='bg-card overflow-hidden rounded-lg border'>
+    <section className='bg-card overflow-hidden rounded-xl border shadow-sm'>
       {/* Chart block ----------------------------------------------------- */}
-      <header className='flex items-start justify-between gap-4 px-5 py-4'>
+      <header className='flex flex-wrap items-start justify-between gap-4 px-5 py-5 sm:px-6'>
         <div className='min-w-0 flex-1'>
           <h2 className='text-foreground inline-flex items-center gap-2 text-base font-semibold'>
             <BarChart3 className='text-primary size-4' />
@@ -186,7 +186,7 @@ export function ModelsSection(props: ModelsSectionProps) {
         </div>
       </header>
 
-      <div className='px-5 pb-5'>
+      <div className='px-5 pb-5 sm:px-6'>
         <div className='h-60 sm:h-72'>
           {themeReady && spec ? (
             <VChart
@@ -207,7 +207,7 @@ export function ModelsSection(props: ModelsSectionProps) {
       </div>
 
       {/* Leaderboard block ----------------------------------------------- */}
-      <div className='border-t'>
+      <div className='bg-muted/10 border-t'>
         <header className='px-5 pt-4 pb-2'>
           <h3 className='text-foreground inline-flex items-center gap-2 text-sm font-semibold'>
             <Trophy className='size-3.5 text-amber-500' />

@@ -132,6 +132,10 @@ export function getServerErrorStatus(value: unknown): number | undefined {
   return undefined
 }
 
+export function getServerErrorStatusMessageKey(value: unknown): string | null {
+  return getServerErrorStatus(value) === 429 ? 'Too many requests' : null
+}
+
 export function isServerErrorCancelled(value: unknown): boolean {
   return getServerErrorSources(value).some(
     (source) =>
@@ -188,6 +192,8 @@ export function getServerErrorMessage(
     if (message) return message
   }
   const status = getServerErrorStatus(value)
+  const statusMessageKey = getServerErrorStatusMessageKey(value)
+  if (statusMessageKey) return i18next.t(statusMessageKey)
   if (status === 304) return i18next.t('Content not modified!')
   if (status === 204) return i18next.t('Content not found.')
   for (const source of sources) {

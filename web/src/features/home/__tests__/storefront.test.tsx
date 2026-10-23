@@ -97,6 +97,31 @@ describe('Niu Dali storefront primary action', () => {
     ).toHaveClass('[overflow-wrap:anywhere]')
   })
 
+  it('stacks hero content on smaller screens and keeps the API illustration decorative', async () => {
+    renderStorefront(false)
+
+    const hero = await screen.findByRole('region', { name: 'Niu Dali' })
+    const layout = hero.querySelector('[data-slot="hero-layout"]')
+    expect(layout).toHaveClass('grid', 'min-w-0', 'lg:grid-cols-[1.1fr_1fr]')
+    expect(layout).not.toHaveClass('grid-cols-2')
+    expect(
+      hero.querySelector('[data-slot="card"]')?.parentElement
+    ).toHaveAttribute('aria-hidden', 'true')
+  })
+
+  it('keeps the closing actions below the copy until a wide screen can fit both', async () => {
+    renderStorefront(false)
+
+    const heading = await screen.findByRole('heading', {
+      name: 'Ready for your next request?',
+    })
+    expect(heading.closest('.niu-dali-cta')).toHaveClass(
+      'flex-col',
+      'lg:flex-row',
+      'overflow-hidden'
+    )
+  })
+
   it('preserves New API attribution in the multi-protocol feature card', async () => {
     renderStorefront(false)
 

@@ -61,13 +61,13 @@ export function PerformanceHealthPanel() {
   const hasData = models.length > 0
 
   return (
-    <section className='bg-card h-full overflow-hidden rounded-2xl border shadow-xs'>
-      <div className='flex items-center gap-2 border-b px-4 py-3 sm:px-5'>
+    <section className='bg-card border-border/80 h-full min-w-0 overflow-hidden rounded-xl border shadow-xs'>
+      <div className='border-border/70 flex flex-wrap items-center gap-2 border-b px-4 py-4 sm:px-5'>
         <IconBadge tone='success' size='sm'>
           <HeartPulse />
         </IconBadge>
         <h3 className='text-sm font-semibold'>{t('Performance health')}</h3>
-        <span className='text-muted-foreground ml-auto text-xs'>
+        <span className='text-muted-foreground ml-auto text-xs leading-relaxed'>
           {t('Performance metrics for the last 24 hours')}
         </span>
       </div>
@@ -159,7 +159,7 @@ function MetricCell(props: {
 }) {
   const Icon = props.icon
   return (
-    <div className='bg-muted/40 rounded-xl px-3 py-2.5'>
+    <div className='bg-muted/30 border-border/50 min-w-0 rounded-lg border px-3 py-3'>
       <div className='text-muted-foreground flex items-center gap-1.5 text-[11px] font-medium'>
         <IconBadge tone={props.tone} size='xs'>
           <Icon />

@@ -18,7 +18,12 @@ For commercial licensing, please contact support@quantumnous.com
 */
 import { describe, expect, test } from 'vitest'
 
-import { getServerErrorMessageKey } from './server-error-message'
+import { AuthOperationError } from './secure-verification'
+import {
+  getServerErrorMessage,
+  getServerErrorMessageKey,
+  getServerErrorStatusMessageKey,
+} from './server-error-message'
 
 describe('server error message mapping', () => {
   test('maps the active-session limit to recovery instructions', () => {
@@ -35,6 +40,37 @@ describe('server error message mapping', () => {
 
     expect(message ?? '').toMatch(/rolling window/)
     expect(getServerErrorMessageKey({ code: 'UNKNOWN_CODE' })).toBe(null)
+  })
+
+  test('maps HTTP 429 errors to the localized rate-limit reason', () => {
+    const error = Object.assign(
+      new Error('Request failed with status code 429'),
+      {
+        isAxiosError: true,
+        response: { status: 429 },
+      }
+    )
+
+    expect(getServerErrorMessageKey(error)).toBe(null)
+    expect(getServerErrorStatusMessageKey(error)).toBe('Too many requests')
+    expect(getServerErrorMessage(error)).toBe('Too many requests')
+    expect(getServerErrorMessage(AuthOperationError.from(error))).toBe(
+      'Too many requests'
+    )
+
+    const serverMessageError = Object.assign(
+      new Error('Request failed with status code 429'),
+      {
+        isAxiosError: true,
+        response: {
+          status: 429,
+          data: { message: 'Please wait before trying again.' },
+        },
+      }
+    )
+    expect(getServerErrorMessage(serverMessageError)).toBe(
+      'Please wait before trying again.'
+    )
   })
 
   test('maps stable Telegram bind errors without exposing server text', () => {

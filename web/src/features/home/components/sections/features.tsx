@@ -49,8 +49,8 @@ export function Features(_props: FeaturesProps) {
         'Compare model access and pricing before you commit balance.'
       ),
       preview: (
-        <div className='border-border bg-muted/30 flex items-center justify-between border px-3 py-3'>
-          <div>
+        <div className='border-border bg-muted/30 flex flex-wrap items-center justify-between gap-3 rounded-lg border px-3 py-3'>
+          <div className='min-w-0'>
             <p className='text-xs font-medium'>{t('Balance')}</p>
             <p className='text-muted-foreground mt-1 text-xs'>
               {t('Ready for API usage')}
@@ -69,7 +69,7 @@ export function Features(_props: FeaturesProps) {
       ),
       preview: (
         <div className='flex flex-col gap-3'>
-          <div className='border-border bg-muted/30 border px-3 py-2.5 font-mono text-xs'>
+          <div className='border-border bg-muted/30 overflow-hidden rounded-lg border px-3 py-2.5 font-mono text-xs text-ellipsis'>
             nd_live_••••••••••••
           </div>
           <div className='flex flex-wrap gap-2'>
@@ -90,7 +90,7 @@ export function Features(_props: FeaturesProps) {
         'See token usage, cost, and remaining balance in one console.'
       ),
       preview: (
-        <div className='border-border divide-border grid grid-cols-2 divide-x border'>
+        <div className='border-border divide-border bg-muted/30 grid grid-cols-2 divide-x overflow-hidden rounded-lg border'>
           <div className='px-3 py-3'>
             <p className='text-xs font-medium'>{t('Usage')}</p>
             <p className='text-muted-foreground mt-1 text-xs'>Token</p>
@@ -105,11 +105,11 @@ export function Features(_props: FeaturesProps) {
   ]
 
   return (
-    <section className='bg-background px-5 py-20 sm:px-8 md:py-28 lg:px-10'>
+    <section className='bg-background px-5 py-20 sm:px-8 md:py-24 lg:px-10'>
       <div className='mx-auto max-w-6xl'>
         <AnimateInView className='max-w-2xl'>
           <p className='text-primary text-sm font-medium'>Niu Dali</p>
-          <h2 className='mt-3 text-3xl leading-tight font-semibold text-balance md:text-4xl'>
+          <h2 className='mt-3 text-3xl leading-tight font-semibold tracking-tight text-balance md:text-4xl'>
             {t('Built for buying, using, and understanding tokens')}
           </h2>
           <p className='text-muted-foreground mt-4 max-w-xl text-sm leading-7 sm:text-base'>
@@ -119,12 +119,12 @@ export function Features(_props: FeaturesProps) {
           </p>
         </AnimateInView>
 
-        <div className='mt-12 grid gap-4 lg:grid-cols-3'>
+        <div className='mt-10 grid gap-5 lg:grid-cols-3'>
           {features.map((feature, index) => (
             <AnimateInView delay={index * 90} key={feature.id}>
-              <Card className='h-full rounded-lg'>
-                <CardHeader>
-                  <div className='bg-primary/10 text-primary mb-3 flex size-9 items-center justify-center rounded-md'>
+              <Card className='border-border shadow-foreground/3 h-full min-w-0 gap-6 rounded-xl border py-6 shadow-sm ring-0'>
+                <CardHeader className='gap-2 px-6'>
+                  <div className='bg-primary/8 text-primary mb-3 flex size-11 items-center justify-center rounded-lg'>
                     <HugeiconsIcon
                       icon={feature.icon}
                       className='size-5'
@@ -133,11 +133,13 @@ export function Features(_props: FeaturesProps) {
                     />
                   </div>
                   <CardTitle className='text-lg'>{feature.title}</CardTitle>
-                  <CardDescription className='min-h-12 leading-6'>
+                  <CardDescription className='min-h-12 leading-6 [overflow-wrap:anywhere]'>
                     {feature.description}
                   </CardDescription>
                 </CardHeader>
-                <CardContent>{feature.preview}</CardContent>
+                <CardContent className='mt-auto px-6'>
+                  {feature.preview}
+                </CardContent>
               </Card>
             </AnimateInView>
           ))}

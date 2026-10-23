@@ -27,6 +27,7 @@ import { GroupBadge } from '@/components/group-badge'
 import { LongText } from '@/components/long-text'
 import { StatusBadge } from '@/components/status-badge'
 import { TableId } from '@/components/table-id'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import {
@@ -37,10 +38,12 @@ import {
 import { toIntlLocale } from '@/i18n/languages'
 import { getCurrencyDisplay } from '@/lib/currency'
 import { formatNumber, formatQuota } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { useAuthStore } from '@/stores/auth-store'
 import { useSystemConfigStore } from '@/stores/system-config-store'
 
 import {
+  USER_ROLE,
   USER_STATUS,
   USER_STATUSES,
   USER_ROLES,
@@ -50,6 +53,14 @@ import { isDelegatedUserManager } from '../lib/user-actions'
 import type { User } from '../types'
 import { DataTableRowActions } from './data-table-row-actions'
 import { UserQuotaCell } from './user-quota-cell'
+
+const roleBadgeClassName: Record<number, string> = {
+  [USER_ROLE.USER]: 'border-border bg-muted/60 text-muted-foreground',
+  [USER_ROLE.USER_MANAGER]: 'border-info/30 bg-info/10 text-info',
+  [USER_ROLE.THIRD_LEVEL_USER]: 'border-chart-2/30 bg-chart-2/10 text-chart-2',
+  [USER_ROLE.ADMIN]: 'border-warning/30 bg-warning/10 text-warning',
+  [USER_ROLE.ROOT]: 'border-chart-4/30 bg-chart-4/10 text-chart-4',
+}
 
 export function useUsersColumns(): ColumnDef<User>[] {
   const { t, i18n } = useTranslation()
@@ -303,7 +314,20 @@ export function useUsersColumns(): ColumnDef<User>[] {
             return null
           }
 
-          return <span className='text-sm'>{t(roleConfig.labelKey)}</span>
+          const RoleIcon = roleConfig.icon
+
+          return (
+            <Badge
+              variant='outline'
+              className={cn(
+                'h-6 gap-1.5 px-2 text-xs font-medium',
+                roleBadgeClassName[roleValue]
+              )}
+            >
+              <RoleIcon aria-hidden='true' className='size-3.5 shrink-0' />
+              <span>{t(roleConfig.labelKey)}</span>
+            </Badge>
+          )
         },
         filterFn: (row, id, value) => {
           return value.includes(String(row.getValue(id)))

@@ -55,15 +55,20 @@ export function GeneralError({
     : t('Please try again later.')
 
   return (
-    <div className={cn('h-svh w-full', className)}>
-      <div className='m-auto flex h-full w-full flex-col items-center justify-center gap-2'>
+    <div
+      className={cn(
+        'bg-background flex min-h-svh w-full items-center justify-center p-4 sm:p-8',
+        className
+      )}
+    >
+      <div className='bg-card m-auto flex w-full max-w-xl flex-col items-center justify-center gap-3 rounded-xl border px-6 py-12 text-center shadow-sm sm:px-10 sm:py-14'>
         {!minimal && (
-          <h1 className='text-[7rem] leading-tight font-bold'>
+          <h1 className='text-primary text-[5rem] leading-none font-semibold tracking-tight sm:text-[6rem]'>
             {status ?? 500}
           </h1>
         )}
-        <span className='font-medium'>{title}</span>
-        <p className='text-muted-foreground text-center'>
+        <span className='text-xl font-semibold tracking-tight'>{title}</span>
+        <p className='text-muted-foreground text-center text-sm leading-6'>
           {t('We apologize for the inconvenience.')} <br /> {description}
         </p>
         {!minimal && (
@@ -72,7 +77,7 @@ export function GeneralError({
           </p>
         )}
         {!minimal && (
-          <div className='mt-6 flex flex-wrap justify-center gap-4'>
+          <div className='mt-5 flex max-w-full flex-wrap justify-center gap-3'>
             <Button variant='outline' onClick={() => history.go(-1)}>
               {t('Go Back')}
             </Button>

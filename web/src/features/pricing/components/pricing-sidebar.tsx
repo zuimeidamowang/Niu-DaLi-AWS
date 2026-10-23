@@ -97,7 +97,7 @@ function FilterChip(props: {
       size='sm'
       onClick={props.onClick}
       aria-pressed={props.active}
-      className='h-auto max-w-full gap-1.5 px-2 py-1 text-xs'
+      className='aria-pressed:border-primary/20 aria-pressed:bg-primary/8 aria-pressed:text-primary h-auto max-w-full gap-1.5 px-2 py-1 text-xs'
       title={props.option.label}
     >
       {props.option.icon && (
@@ -265,11 +265,15 @@ export const PricingSidebar = memo(function PricingSidebar(
   ]
 
   return (
-    <aside className={cn('bg-card rounded-xl border p-3', props.className)}>
-      <div className='mb-2.5 flex items-center justify-between gap-2'>
+    <aside
+      className={cn('bg-card rounded-xl border p-4 shadow-sm', props.className)}
+    >
+      <div className='mb-3 flex items-start justify-between gap-2 border-b pb-4'>
         <div>
-          <h2 className='text-foreground text-sm font-bold'>{t('Filter')}</h2>
-          <p className='text-muted-foreground mt-1 text-xs'>
+          <h2 className='text-foreground text-sm font-semibold'>
+            {t('Filter')}
+          </h2>
+          <p className='text-muted-foreground mt-1.5 text-xs leading-5'>
             {t('Refine models by provider, group, type, and tags.')}
           </p>
         </div>
