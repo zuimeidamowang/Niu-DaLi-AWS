@@ -46,8 +46,14 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-function topNavFor(canvasLink?: string) {
-  client.setQueryData(['status'], { canvas_link: canvasLink })
+function topNavFor(
+  canvasLink?: string,
+  statusOverrides: Record<string, unknown> = {}
+) {
+  client.setQueryData(['status'], {
+    canvas_link: canvasLink,
+    ...statusOverrides,
+  })
   function Wrapper(props: { children: ReactNode }) {
     return (
       <QueryClientProvider client={client}>
@@ -88,4 +94,16 @@ describe('external canvas top navigation', () => {
       ).toBe(false)
     }
   )
+})
+
+describe('retired documentation and about navigation', () => {
+  it('hides both entries even when an existing server configuration enables them', () => {
+    const { result } = topNavFor(undefined, {
+      HeaderNavModules: { docs: true, about: true },
+      docs_link: 'https://docs.example.test',
+    })
+
+    expect(result.current.some((link) => link.title === 'Docs')).toBe(false)
+    expect(result.current.some((link) => link.title === 'About')).toBe(false)
+  })
 })
