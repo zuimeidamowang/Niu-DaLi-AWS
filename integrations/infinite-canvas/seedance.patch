@@ -229,7 +229,7 @@
 +// channel editor no longer needs the per-channel adapter switch to be set.
 +export function isDlnGateway(baseUrl: string): boolean {
 +    try {
-+        return new URL(baseUrl).hostname === "8.216.57.93";
++        return ["www.daliniuai.com", "8.216.57.93", "13.112.137.141"].includes(new URL(baseUrl).hostname);
 +    } catch {
 +        return false;
 +    }
@@ -257,7 +257,7 @@
 +    const seedance = usesSeedanceAdapter({baseUrl, videoAdapter}) ? getSeedanceCapabilities(modelOptionName(model)) : undefined;
 +    if (seedance) return seedance;
      try {
-         if (new URL(baseUrl).origin !== "https://8.216.57.93") return undefined;
+         if (new URL(baseUrl).origin !== "https://www.daliniuai.com") return undefined;
      } catch {
 @@ -25,8 +28,14 @@
      const model = config.model || config.videoModel;
@@ -515,7 +515,7 @@
  
 --- /dev/null
 +++ b/web/tests/seedance-video.test.ts
-@@ -0,0 +1,107 @@
+@@ -0,0 +1,113 @@
 +import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 +import axios from "axios";
 +import { installBrowserStorage } from "./helpers/browser-storage";
@@ -623,6 +623,12 @@
 +    const {usesSeedanceAdapter} = await import("../src/lib/seedance-capabilities");
 +    expect(usesSeedanceAdapter({baseUrl})).toBe(false);
 +});
++
++test.each(["https://www.daliniuai.com", "https://8.216.57.93/v1", "http://13.112.137.141"])("%s selects the DLN gateway adapter", async baseUrl => {
++    const {isDlnGateway, usesSeedanceAdapter} = await import("../src/lib/seedance-capabilities");
++    expect(isDlnGateway(baseUrl)).toBe(true);
++    expect(usesSeedanceAdapter({baseUrl})).toBe(true);
++});
 --- a/web/tests/video-settings-panel.test.tsx
 +++ b/web/tests/video-settings-panel.test.tsx
 @@ -21,7 +21,7 @@
@@ -637,7 +643,7 @@
 @@ -31,6 +31,7 @@
          channels: [{
              ...structuredClone(configModule.defaultConfig.channels[0]),
-             baseUrl: options.baseUrl || "https://8.216.57.93",
+             baseUrl: options.baseUrl || "https://www.daliniuai.com",
 +            videoAdapter: options.videoAdapter,
              models: [{ name: model, capability: "video", script: options.script }],
          }],
