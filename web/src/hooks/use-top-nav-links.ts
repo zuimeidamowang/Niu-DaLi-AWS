@@ -96,9 +96,28 @@ export function useTopNavLinks(): TopNavLink[] {
     | string
     | undefined
   if (canvasLink && canvasLink.trim()) {
+    const canvasHref = canvasLink.trim()
+    let href = canvasHref
+    try {
+      const canvasURL = new URL(
+        canvasHref.startsWith('//') ? `https:${canvasHref}` : canvasHref
+      )
+      if (
+        canvasURL.hostname === '13.112.137.141' ||
+        canvasURL.hostname === '8.216.57.93'
+      ) {
+        canvasURL.protocol = 'https:'
+        canvasURL.host = 'www.daliniuai.com'
+        canvasURL.username = ''
+        canvasURL.password = ''
+        href = canvasURL.toString()
+      }
+    } catch {
+      // Keep non-absolute canvas links unchanged.
+    }
     links.push({
       title: t('Infinite canvas'),
-      href: canvasLink.trim(),
+      href,
       external: true,
     })
   }

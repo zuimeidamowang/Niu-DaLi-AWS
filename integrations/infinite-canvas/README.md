@@ -19,11 +19,11 @@ bun run dev --port 3001 --strictPort
 
 脚本校验固定版本与工作区是否干净、检查补丁是否可应用，并支持重复执行。发布时在同一 `web/` 目录运行 `bun run build`，部署生成的 `dist/`。仅部署主项目不会自动更新独立画布网站。
 
-首次访问默认渠道的 Base URL 为 `https://8.216.57.93`，模型目录请求为 `https://8.216.57.93/v1/models`。Base URL 不应填写完整的 `/v1/models`，否则生成接口会拼接到错误路径。API Key 留空，由每位用户填写自己的 Key。
+首次访问默认渠道的 Base URL 为 `https://www.daliniuai.com`，模型目录请求为 `https://www.daliniuai.com/v1/models`。Base URL 不应填写完整的 `/v1/models`，否则生成接口会拼接到错误路径。API Key 留空，由每位用户填写自己的 Key。
 
 ## 子路径部署（`/canvas/`）必须应用 `subpath.patch`
 
-生产把画布挂在 `https://8.216.57.93/canvas/` 子路径下（见 `niu-dali-infinite-canvas-deploy`），
+生产把画布挂在 `https://www.daliniuai.com/canvas/` 子路径下（见 `niu-dali-infinite-canvas-deploy`），
 构建时用 `VITE_BASE=/canvas/`。**只设 `VITE_BASE` 不够**：它只影响静态资源 URL，
 SPA 路由仍需补丁，否则应用内所有 `<Link to="/video">` 会解析成**裸路径 `/video`**，
 落在网关域名上 —— 客户端点击看似正常，但**刷新、直接打开或收藏任何子页都会 404**。
@@ -119,7 +119,7 @@ SPA 路由仍需补丁，否则应用内所有 `<Link to="/video">` 会解析成
 
 渠道的“视频接入方式”下拉框有三项：`88API 直连（自动多素材上传）`（仅当 Base URL 是官方地址时出现）、`DLN网关`（值 `88api`）、`通用 OpenAI 视频`（值 `standard`）。**`DLN网关` 排在 `通用 OpenAI 视频` 前面**，取值的判定顺序是「官方直连 → 网关地址或显式 `88api` → 否则 `standard`」。
 
-填写本网关地址（主机名 `8.216.57.93`，如 `https://8.216.57.93`、`https://8.216.57.93/v1`）后按主机名自动启用内置多素材接入，**不需要手动改下拉框**：`isDlnGateway()` 只看 `URL.hostname`，协议与路径都不影响判定。此时渠道编辑页显示“已识别 DLN 网关地址：默认按内置多素材接入提交，无需额外设置……改用「通用 OpenAI 视频」可回到通用请求。”
+填写本网关地址（主机名 `www.daliniuai.com`，如 `https://www.daliniuai.com`、`https://www.daliniuai.com/v1`）后按主机名自动启用内置多素材接入，**不需要手动改下拉框**：`isDlnGateway()` 只看 `URL.hostname`，协议与路径都不影响判定。此时渠道编辑页显示“已识别 DLN 网关地址：默认按内置多素材接入提交，无需额外设置……改用「通用 OpenAI 视频」可回到通用请求。”
 
 要显式退回通用单文件上传，在网关地址上选“通用 OpenAI 视频”（`standard`）即可——`standard` 是**显式退出**，优先于地址判定；这与旧版不同，旧版把 `standard` 落成 `undefined`，会重新被地址判定拉回内置接入。撤销渠道的 `videoAdapter` 字段则回到“按地址判定”。
 

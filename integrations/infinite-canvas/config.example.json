@@ -4,14 +4,14 @@
   "exportedAt": "2026-10-10T00:00:00.000Z",
   "config": {
     "channelMode": "local",
-    "baseUrl": "https://8.216.57.93",
+    "baseUrl": "https://www.daliniuai.com",
     "apiKey": "",
     "apiFormat": "openai",
     "channels": [
       {
         "id": "default",
         "name": "默认渠道",
-        "baseUrl": "https://8.216.57.93",
+        "baseUrl": "https://www.daliniuai.com",
         "apiKey": "",
         "apiFormat": "openai",
         "models": [

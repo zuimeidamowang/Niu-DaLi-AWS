@@ -26,6 +26,29 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const publicSiteURL = "https://www.daliniuai.com"
+
+func replaceIPAddressWithPublicDomain(address string) string {
+	parsed, err := url.Parse(strings.TrimSpace(address))
+	if err != nil {
+		return address
+	}
+	switch parsed.Hostname() {
+	case "13.112.137.141", "8.216.57.93":
+	default:
+		return address
+	}
+
+	publicURL, err := url.Parse(publicSiteURL)
+	if err != nil {
+		return address
+	}
+	parsed.Scheme = publicURL.Scheme
+	parsed.Host = publicURL.Host
+	parsed.User = nil
+	return parsed.String()
+}
+
 func TestStatus(c *gin.Context) {
 	err := model.PingDB()
 	if err != nil {
@@ -49,6 +72,7 @@ func GetStatus(c *gin.Context) {
 
 	cs := console_setting.GetConsoleSetting()
 	passkeySetting := system_setting.PasskeySettingsSnapshot()
+	generalSetting := operation_setting.GetGeneralSetting()
 	common.OptionMapRWMutex.RLock()
 	defer common.OptionMapRWMutex.RUnlock()
 
@@ -74,17 +98,17 @@ func GetStatus(c *gin.Context) {
 		"footer_html":                 common.Footer,
 		"wechat_qrcode":               common.WeChatAccountQRCodeImageURL,
 		"wechat_login":                common.WeChatAuthEnabled,
-		"server_address":              system_setting.ServerAddress,
+		"server_address":              replaceIPAddressWithPublicDomain(system_setting.ServerAddress),
 		"turnstile_check":             common.TurnstileCheckEnabled,
 		"turnstile_site_key":          common.TurnstileSiteKey,
-		"docs_link":                   operation_setting.GetGeneralSetting().DocsLink,
-		"canvas_link":                 operation_setting.GetGeneralSetting().CanvasLink,
+		"docs_link":                   generalSetting.DocsLink,
+		"canvas_link":                 replaceIPAddressWithPublicDomain(generalSetting.CanvasLink),
 		"quota_per_unit":              common.QuotaPerUnit,
 		// 兼容旧前端：保留 display_in_currency，同时提供新的 quota_display_type
 		"display_in_currency":           operation_setting.IsCurrencyDisplay(),
 		"quota_display_type":            operation_setting.GetQuotaDisplayType(),
-		"custom_currency_symbol":        operation_setting.GetGeneralSetting().CustomCurrencySymbol,
-		"custom_currency_exchange_rate": operation_setting.GetGeneralSetting().CustomCurrencyExchangeRate,
+		"custom_currency_symbol":        generalSetting.CustomCurrencySymbol,
+		"custom_currency_exchange_rate": generalSetting.CustomCurrencyExchangeRate,
 		"enable_batch_update":           common.BatchUpdateEnabled,
 		"enable_drawing":                common.DrawingEnabled,
 		"enable_task":                   common.TaskEnabled,
@@ -135,7 +159,13 @@ func GetStatus(c *gin.Context) {
 
 	// 根据启用状态注入可选内容
 	if cs.ApiInfoEnabled {
-		data["api_info"] = console_setting.GetApiInfo()
+		apiInfo := console_setting.GetApiInfo()
+		for _, item := range apiInfo {
+			if address, ok := item["url"].(string); ok {
+				item["url"] = replaceIPAddressWithPublicDomain(address)
+			}
+		}
+		data["api_info"] = apiInfo
 	}
 	if cs.AnnouncementsEnabled {
 		data["announcements"] = console_setting.GetAnnouncements()

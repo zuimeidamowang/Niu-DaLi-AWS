@@ -411,16 +411,17 @@ index b551012..703eeaf 100644
  
  import i18n from "@/i18n";
 -import { useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
-+import { normalizeChannelNames, useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
++import { migrateLegacyGatewayConfig, normalizeChannelNames, useConfigStore, type AiConfig, type WebdavSyncConfig } from "@/stores/use-config-store";
  import { usePromptSourceStore, type PromptSourceSchedule } from "@/stores/use-prompt-source-store";
  import type { PromptSource } from "@/services/api/prompt-source-presets";
  
-@@ -32,6 +32,6 @@ export async function importAppConfig(file: File) {
+@@ -32,6 +32,7 @@ export async function importAppConfig(file: File) {
          throw new Error(i18n.t("config.invalidFile"));
      }
      if (data.app !== "infinite-canvas" || data.version !== 1 || !data.config || !data.webdav || !data.promptSources) throw new Error(i18n.t("config.invalidFile"));
 -    useConfigStore.setState({ config: data.config, webdav: data.webdav });
-+    useConfigStore.setState({ config: { ...data.config, channels: normalizeChannelNames(data.config.channels) }, webdav: data.webdav });
++    const config = migrateLegacyGatewayConfig(data.config);
++    useConfigStore.setState({ config: { ...config, channels: normalizeChannelNames(config.channels) }, webdav: data.webdav });
      usePromptSourceStore.setState(data.promptSources);
  }
 diff --git a/web/src/stores/use-config-store.ts b/web/src/stores/use-config-store.ts
@@ -432,7 +433,7 @@ index c0a0c85..2b495bb 100644
  export const CONFIG_STORE_KEY = "infinite-canvas:ai_config_store";
  const CHANNEL_MODEL_SEPARATOR = "::";
 -const OPENAI_BASE_URL = "https://api.openai.com";
-+const OPENAI_BASE_URL = "https://8.216.57.93";
++const OPENAI_BASE_URL = "https://www.daliniuai.com";
  const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com";
  export const LOCAL_PROXY_PACKAGE = "@basketikun/canvas-proxy";
  export const DEFAULT_LOCAL_PROXY_URL = "http://127.0.0.1:23210";
@@ -493,7 +494,8 @@ index c0a0c85..2b495bb 100644
 @@ -244,7 +245,7 @@ export const useConfigStore = create<ConfigStore>()(
                  const persistedConfig = (persistedState.config || {}) as Partial<AiConfig>;
                  const persistedWebdav = (persistedState.webdav || {}) as Partial<WebdavSyncConfig>;
-                 const config = { ...defaultConfig, ...persistedConfig };
+-                const config = { ...defaultConfig, ...persistedConfig };
++                const config = migrateLegacyGatewayConfig({ ...defaultConfig, ...persistedConfig });
 -                if (!Array.isArray(persistedConfig.channels)) config.channels = [];
 +                if (persistedState.config && !Array.isArray(persistedConfig.channels)) config.channels = [];
                  const channels = normalizeChannels(config);
@@ -508,7 +510,7 @@ index c0a0c85..2b495bb 100644
          baseUrl: channel?.baseUrl?.trim() || defaultBaseUrlForApiFormat(apiFormat),
          apiKey: channel?.apiKey || "",
          apiFormat,
-@@ -312,6 +313,20 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
+@@ -312,6 +313,45 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
      };
  }
  
@@ -524,6 +526,31 @@ index c0a0c85..2b495bb 100644
 +        return name === channel.name ? channel : { ...channel, name };
 +    });
 +    return normalized.some((channel, index) => channel !== channels[index]) ? normalized : channels;
++}
++
++function migrateLegacyGatewayUrl(baseUrl: string) {
++    try {
++        const url = new URL(baseUrl);
++        if (!["8.216.57.93", "13.112.137.141"].includes(url.hostname)) return baseUrl;
++        url.protocol = "https:";
++        url.hostname = "www.daliniuai.com";
++        const migrated = url.toString();
++        return baseUrl.endsWith("/") ? migrated : migrated.replace(/\/$/, "");
++    } catch {
++        return baseUrl;
++    }
++}
++
++export function migrateLegacyGatewayConfig(config: AiConfig): AiConfig {
++    const channels = Array.isArray(config.channels) ? config.channels.map((channel) => {
++        const baseUrl = migrateLegacyGatewayUrl(channel.baseUrl);
++        return baseUrl === channel.baseUrl ? channel : { ...channel, baseUrl };
++    }) : [];
++    return {
++        ...config,
++        baseUrl: migrateLegacyGatewayUrl(config.baseUrl),
++        channels,
++    };
 +}
 +
  export function upsertChannelCredentials(
@@ -577,7 +604,7 @@ index 0000000..009020f
 +
 +export function getNiuVideoCapabilities(baseUrl: string, model: string) {
 +    try {
-+        if (new URL(baseUrl).origin !== "https://8.216.57.93") return undefined;
++        if (new URL(baseUrl).origin !== "https://www.daliniuai.com") return undefined;
 +    } catch {
 +        return undefined;
 +    }
@@ -607,7 +634,7 @@ new file mode 100644
 index 0000000..7820d43
 --- /dev/null
 +++ b/web/tests/gateway-defaults.test.ts
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,482 @@
 +import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
 +import axios, { type InternalAxiosRequestConfig } from "axios";
 +
@@ -657,10 +684,10 @@ index 0000000..7820d43
 +    expect(useConfigStore.persist.hasHydrated()).toBe(true);
 +
 +    const config = useConfigStore.getState().config;
-+    expect(config.baseUrl).toBe("https://8.216.57.93");
++    expect(config.baseUrl).toBe("https://www.daliniuai.com");
 +    expect(config.apiKey).toBe("");
 +    expect(config.channels).toHaveLength(1);
-+    expect(config.channels[0].baseUrl).toBe("https://8.216.57.93");
++    expect(config.channels[0].baseUrl).toBe("https://www.daliniuai.com");
 +    expect(config.channels[0].apiKey).toBe("");
 +    expect(config.channels[0].models).toEqual([
 +        { name: "Sd-2.0fast", capability: "video" },
@@ -670,8 +697,8 @@ index 0000000..7820d43
 +    ]);
 +    expect(selectableModelsByCapability(config, "video")).toEqual(["default::Sd-2.0fast", "default::Sd-2.0满血933", "default::Sd-2.5", "default::minmax-h3"]);
 +    expect(config.videoModel).toBe("default::Sd-2.0fast");
-+    expect(buildApiUrl(config.channels[0].baseUrl, "/models")).toBe("https://8.216.57.93/v1/models");
-+    expect(buildApiUrl(config.channels[0].baseUrl, "/videos")).toBe("https://8.216.57.93/v1/videos");
++    expect(buildApiUrl(config.channels[0].baseUrl, "/models")).toBe("https://www.daliniuai.com/v1/models");
++    expect(buildApiUrl(config.channels[0].baseUrl, "/videos")).toBe("https://www.daliniuai.com/v1/videos");
 +});
 +
 +test("hydration preserves saved channels, API keys and preferences", async () => {
@@ -706,6 +733,33 @@ index 0000000..7820d43
 +    await useConfigStore.persist.rehydrate();
 +
 +    expect(useConfigStore.getState().config).toEqual(savedConfig);
++});
++
++test("hydration migrates legacy gateway URLs while preserving custom channels", async () => {
++    const { CONFIG_STORE_KEY, defaultConfig, useConfigStore } = configModule;
++    const savedConfig: AiConfig = {
++        ...structuredClone(defaultConfig),
++        baseUrl: "http://8.216.57.93",
++        apiKey: "fixture-global-key",
++        channels: [
++            { ...structuredClone(defaultConfig.channels[0]), baseUrl: "https://8.216.57.93/v1/", apiKey: "fixture-channel-key" },
++            { ...structuredClone(defaultConfig.channels[0]), id: "custom", baseUrl: "https://192.0.2.1/custom" },
++            { ...structuredClone(defaultConfig.channels[0]), id: "api-host", baseUrl: "http://13.112.137.141/v1" },
++        ],
++    };
++    storage.setItem(CONFIG_STORE_KEY, JSON.stringify({ state: { config: savedConfig }, version: 0 }));
++
++    await useConfigStore.persist.rehydrate();
++
++    const config = useConfigStore.getState().config;
++    expect(config.baseUrl).toBe("https://www.daliniuai.com");
++    expect(config.apiKey).toBe("fixture-global-key");
++    expect(config.channels.map((channel) => channel.baseUrl)).toEqual([
++        "https://www.daliniuai.com/v1/",
++        "https://192.0.2.1/custom",
++        "https://www.daliniuai.com/v1",
++    ]);
++    expect(config.channels[0].apiKey).toBe("fixture-channel-key");
 +});
 +
 +function savedChannelConfig(name: string): AiConfig {
@@ -777,12 +831,13 @@ index 0000000..7820d43
 +    const { usePromptSourceStore } = await import("../src/stores/use-prompt-source-store");
 +    const { useConfigStore, defaultWebdavSyncConfig } = configModule;
 +    const savedConfig = savedChannelConfig("zhi168 · 大力牛视频");
++    savedConfig.channels[0].baseUrl = "https://8.216.57.93/v1/";
 +    const { sources, schedule } = usePromptSourceStore.getState();
 +    const file = new File([JSON.stringify({ app: "infinite-canvas", version: 1, config: savedConfig, webdav: defaultWebdavSyncConfig, promptSources: { sources, schedule } })], "config.json", { type: "application/json" });
 +
 +    await importAppConfig(file);
 +
-+    expect(useConfigStore.getState().config).toEqual({ ...savedConfig, channels: [{ ...savedConfig.channels[0], name: "大力牛视频" }] });
++    expect(useConfigStore.getState().config).toEqual({ ...savedConfig, channels: [{ ...savedConfig.channels[0], name: "大力牛视频", baseUrl: "https://www.daliniuai.com/v1/" }] });
 +});
 +
 +test("built-in video creation and polling use gateway URLs and the channel Bearer key", async () => {
@@ -801,9 +856,9 @@ index 0000000..7820d43
 +    axios.defaults.adapter = async (request) => {
 +        requests.push(request);
 +        let data: unknown;
-+        if (request.method === "post" && request.url === "https://8.216.57.93/v1/videos") data = { id: "fixture-task", status: "queued" };
-+        else if (request.method === "get" && request.url === "https://8.216.57.93/v1/videos/fixture-task") data = { id: "fixture-task", status: "completed" };
-+        else if (request.method === "get" && request.url === "https://8.216.57.93/v1/videos/fixture-task/content") data = video;
++        if (request.method === "post" && request.url === "https://www.daliniuai.com/v1/videos") data = { id: "fixture-task", status: "queued" };
++        else if (request.method === "get" && request.url === "https://www.daliniuai.com/v1/videos/fixture-task") data = { id: "fixture-task", status: "completed" };
++        else if (request.method === "get" && request.url === "https://www.daliniuai.com/v1/videos/fixture-task/content") data = video;
 +        else throw new Error(`Unexpected offline request: ${request.method} ${request.url}`);
 +        return { data, status: 200, statusText: "OK", headers: {}, config: request };
 +    };
@@ -824,18 +879,18 @@ index 0000000..7820d43
 +    const state = await videoModule.pollVideoGenerationTask(config, task);
 +    expect(state).toEqual({ status: "completed", result: { blob: video } });
 +    expect(requests.map((request) => [request.method, request.url])).toEqual([
-+        ["post", "https://8.216.57.93/v1/videos"],
-+        ["get", "https://8.216.57.93/v1/videos/fixture-task"],
-+        ["get", "https://8.216.57.93/v1/videos/fixture-task/content"],
++        ["post", "https://www.daliniuai.com/v1/videos"],
++        ["get", "https://www.daliniuai.com/v1/videos/fixture-task"],
++        ["get", "https://www.daliniuai.com/v1/videos/fixture-task/content"],
 +    ]);
 +    for (const request of requests) expect(request.headers.get("Authorization")).toBe("Bearer fixture-video-key");
 +});
 +
 +test.each([
-+    { baseUrl: "https://8.216.57.93", model: "Sd-2.0fast", size: "720x720", resolution: "720", ratio: "1:1", mode: "frames" },
-+    { baseUrl: "https://8.216.57.93/", model: "Sd-2.0满血933", size: "720x1280", resolution: "720", ratio: "9:16", mode: "reference" },
-+    { baseUrl: "https://8.216.57.93/v1", model: "Sd-2.5", size: "1680x720", resolution: "720", ratio: "21:9", mode: "frames" },
-+    { baseUrl: "https://8.216.57.93/v1/", model: "minmax-h3", size: "1366x768", resolution: "768", ratio: "16:9", mode: "reference" },
++    { baseUrl: "https://www.daliniuai.com", model: "Sd-2.0fast", size: "720x720", resolution: "720", ratio: "1:1", mode: "frames" },
++    { baseUrl: "https://www.daliniuai.com/", model: "Sd-2.0满血933", size: "720x1280", resolution: "720", ratio: "9:16", mode: "reference" },
++    { baseUrl: "https://www.daliniuai.com/v1", model: "Sd-2.5", size: "1680x720", resolution: "720", ratio: "21:9", mode: "frames" },
++    { baseUrl: "https://www.daliniuai.com/v1/", model: "minmax-h3", size: "1366x768", resolution: "768", ratio: "16:9", mode: "reference" },
 +])("gateway $model uses canonical fields and preserves ordered image references at $baseUrl", async ({ baseUrl, model, size, resolution, ratio, mode }) => {
 +    const defaults = configModule.defaultConfig;
 +    const selectedModel = `default::${model}`;
@@ -866,7 +921,7 @@ index 0000000..7820d43
 +
 +    expect(requests).toHaveLength(1);
 +    expect(requests[0].method).toBe("post");
-+    expect(requests[0].url).toBe("https://8.216.57.93/v1/videos");
++    expect(requests[0].url).toBe("https://www.daliniuai.com/v1/videos");
 +    const body = requests[0].data as FormData;
 +    expect(Object.fromEntries(Array.from(body).filter(([, value]) => typeof value === "string"))).toEqual({
 +        model,
@@ -885,8 +940,8 @@ index 0000000..7820d43
 +test.each([
 +    { baseUrl: "https://other-gateway.example", model: "Sd-2.0fast" },
 +    { baseUrl: "http://8.216.57.93", model: "Sd-2.0fast" },
-+    { baseUrl: "https://8.216.57.93:8443", model: "Sd-2.0fast" },
-+    { baseUrl: "https://8.216.57.93", model: "other-video-model" },
++    { baseUrl: "https://www.daliniuai.com:8443", model: "Sd-2.0fast" },
++    { baseUrl: "https://www.daliniuai.com", model: "other-video-model" },
 +])("other OpenAI requests preserve their original fields for $model at $baseUrl", async ({ baseUrl, model }) => {
 +    const defaults = configModule.defaultConfig;
 +    const selectedModel = `default::${model}`;
@@ -940,10 +995,10 @@ index 0000000..7820d43
 +});
 +
 +test.each([
-+    { model: "Sd-2.0fast", baseUrl: "https://8.216.57.93", status: "failed", errorMessage: undefined, proxyEnabled: false },
-+    { model: "Sd-2.0满血933", baseUrl: "https://8.216.57.93/v1", status: "cancelled", errorMessage: "", proxyEnabled: false },
-+    { model: "Sd-2.5", baseUrl: "https://8.216.57.93/", status: "failed", errorMessage: "{}", proxyEnabled: false },
-+    { model: "minmax-h3", baseUrl: "https://8.216.57.93/v1/", status: "cancelled", errorMessage: "  ", proxyEnabled: true },
++    { model: "Sd-2.0fast", baseUrl: "https://www.daliniuai.com", status: "failed", errorMessage: undefined, proxyEnabled: false },
++    { model: "Sd-2.0满血933", baseUrl: "https://www.daliniuai.com/v1", status: "cancelled", errorMessage: "", proxyEnabled: false },
++    { model: "Sd-2.5", baseUrl: "https://www.daliniuai.com/", status: "failed", errorMessage: "{}", proxyEnabled: false },
++    { model: "minmax-h3", baseUrl: "https://www.daliniuai.com/v1/", status: "cancelled", errorMessage: "  ", proxyEnabled: true },
 +])("gateway $model retrieves missing $status details from the native task without resubmitting", async ({ model, baseUrl, status, errorMessage, proxyEnabled }) => {
 +    const defaults = configModule.defaultConfig;
 +    const config: AiConfig = {
@@ -970,8 +1025,8 @@ index 0000000..7820d43
 +
 +    expect(state).toEqual({ status: "failed", error: "MATERIAL_LIMIT_EXCEEDED: reference unavailable" });
 +    expect(requests.map((request) => [request.method, request.url])).toEqual([
-+        ["get", `${prefix}https://8.216.57.93/v1/videos/${task.id}`],
-+        ["get", `${prefix}https://8.216.57.93/mengwuxian/api/v1/video-tasks/${task.id}`],
++        ["get", `${prefix}https://www.daliniuai.com/v1/videos/${task.id}`],
++        ["get", `${prefix}https://www.daliniuai.com/mengwuxian/api/v1/video-tasks/${task.id}`],
 +    ]);
 +    for (const request of requests) {
 +        expect(request.headers.get("Authorization")).toBe("Bearer fixture-video-key");
@@ -994,7 +1049,7 @@ index 0000000..7820d43
 +    const state = await videoModule.pollVideoGenerationTask(config, { id: "fixture-task", provider: "openai", model: config.videoModel });
 +
 +    expect(state).toEqual({ status: "failed", error: "Provider capacity exhausted" });
-+    expect(requests.map((request) => [request.method, request.url])).toEqual([["get", "https://8.216.57.93/v1/videos/fixture-task"]]);
++    expect(requests.map((request) => [request.method, request.url])).toEqual([["get", "https://www.daliniuai.com/v1/videos/fixture-task"]]);
 +});
 +
 +test.each(["missing detail", "query failure"])("native %s preserves the failed task and generic message", async (caseName) => {
@@ -1020,8 +1075,8 @@ index 0000000..7820d43
 +test.each([
 +    { baseUrl: "https://other-gateway.example", model: "Sd-2.0fast" },
 +    { baseUrl: "http://8.216.57.93", model: "Sd-2.0fast" },
-+    { baseUrl: "https://8.216.57.93:8443", model: "Sd-2.0fast" },
-+    { baseUrl: "https://8.216.57.93", model: "other-video-model" },
++    { baseUrl: "https://www.daliniuai.com:8443", model: "Sd-2.0fast" },
++    { baseUrl: "https://www.daliniuai.com", model: "other-video-model" },
 +])("failed $model at $baseUrl does not call the native gateway query", async ({ baseUrl, model }) => {
 +    const defaults = configModule.defaultConfig;
 +    const selectedModel = `default::${model}`;
@@ -1138,14 +1193,14 @@ index 0000000..45a99f5
 +    ["Sd-2.5", ["480", "720", "1080"]],
 +    ["minmax-h3", ["768", "2k"]],
 +] as const)("%s exposes only its supported resolutions", (model, resolutions) => {
-+    expect(getNiuVideoCapabilities("https://8.216.57.93/v1", model)?.resolutions).toEqual(resolutions);
++    expect(getNiuVideoCapabilities("https://www.daliniuai.com/v1", model)?.resolutions).toEqual(resolutions);
 +});
 +
 +test("capabilities are scoped to the gateway and known models", () => {
 +    expect(getNiuVideoCapabilities("https://other.example", "Sd-2.0fast")).toBeUndefined();
-+    expect(getNiuVideoCapabilities("https://8.216.57.93", "custom")).toBeUndefined();
++    expect(getNiuVideoCapabilities("https://www.daliniuai.com", "custom")).toBeUndefined();
 +    expect(getNiuVideoCapabilities("invalid", "Sd-2.0fast")).toBeUndefined();
-+    expect(getNiuVideoCapabilities("https://8.216.57.93", "minmax-h3")?.ratios).toEqual(["16:9", "9:16", "1:1"]);
++    expect(getNiuVideoCapabilities("https://www.daliniuai.com", "minmax-h3")?.ratios).toEqual(["16:9", "9:16", "1:1"]);
 +});
 +
 +test.each([
@@ -1243,7 +1298,7 @@ index 0000000..e9cb9db
 +        vquality: options.resolution || "720",
 +        channels: [{
 +            ...structuredClone(configModule.defaultConfig.channels[0]),
-+            baseUrl: options.baseUrl || "https://8.216.57.93",
++            baseUrl: options.baseUrl || "https://www.daliniuai.com",
 +            models: [{ name: model, capability: "video", script: options.script }],
 +        }],
 +    };
@@ -1298,7 +1353,7 @@ index 0000000..e9cb9db
 +
 +test.each([
 +    { baseUrl: "https://other-gateway.example" },
-+    { baseUrl: "https://8.216.57.93", script: "return { url: 'fixture' };" },
++    { baseUrl: "https://www.daliniuai.com", script: "return { url: 'fixture' };" },
 +])("other providers and custom model scripts keep editable settings", (options) => {
 +    const view = renderSettings("Sd-2.0fast", options);
 +    expect(view.buttons.get("480p")).not.toContain('disabled=""');

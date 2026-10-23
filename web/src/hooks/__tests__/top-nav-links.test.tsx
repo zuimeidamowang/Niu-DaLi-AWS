@@ -79,6 +79,32 @@ describe('external canvas top navigation', () => {
     ).toBe(true)
   })
 
+  it.each([
+    ['http://13.112.137.141/canvas/', 'https://www.daliniuai.com/canvas/'],
+    [
+      'https://8.216.57.93/canvas/?from=nav',
+      'https://www.daliniuai.com/canvas/?from=nav',
+    ],
+    ['//13.112.137.141/canvas/', 'https://www.daliniuai.com/canvas/'],
+  ])(
+    'replaces legacy canvas IP %s with the public domain',
+    (canvasLink, href) => {
+      const { result } = topNavFor(canvasLink)
+
+      expect(
+        result.current.find((link) => link.title === 'Infinite canvas')?.href
+      ).toBe(href)
+    }
+  )
+
+  it('preserves a configured canvas domain', () => {
+    const { result } = topNavFor('https://canvas.example.test/canvas/')
+
+    expect(
+      result.current.find((link) => link.title === 'Infinite canvas')?.href
+    ).toBe('https://canvas.example.test/canvas/')
+  })
+
   it.each([undefined, '', '   '])(
     'an unconfigured canvas URL hides its navigation entry (%j)',
     (canvasLink) => {
