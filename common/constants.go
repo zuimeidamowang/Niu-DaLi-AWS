@@ -246,7 +246,7 @@ var (
 	GlobalWebRateLimitDuration int64
 
 	CriticalRateLimitEnable   bool
-	CriticalRateLimitNum            = 20
+	CriticalRateLimitNum            = 60
 	CriticalRateLimitDuration int64 = 20 * 60
 
 	UploadRateLimitNum            = 10
