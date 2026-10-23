@@ -14,10 +14,14 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	"github.com/QuantumNous/new-api/relaykit/dto"
+	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/model_setting"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 )
 
 func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T) {
@@ -27,6 +31,62 @@ func TestChannelMatchesExpectedTaskPluginUsesGenericChannelSetting(t *testing.T)
 	assert.True(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-alpha"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, "generic-beta"))
 	assert.False(t, channelMatchesExpectedTaskPlugin(nil, channel, ""))
+}
+
+func TestDistributeRejectsPlaygroundGroupWithoutConfiguredRatio(t *testing.T) {
+	require.NoError(t, i18n.Init())
+	previousDB, previousMainType := model.DB, common.MainDatabaseType()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	require.NoError(t, db.AutoMigrate(&model.Channel{}, &model.Ability{}))
+	model.DB = db
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.SetMainDatabaseType(previousMainType)
+		model.InitChannelCache()
+	})
+
+	previousUsableGroups := setting.UserUsableGroups2JSONString()
+	previousRatios := ratio_setting.GroupRatio2JSONString()
+	specialGroups := ratio_setting.GetGroupRatioSetting().GroupSpecialUsableGroup
+	previousSpecialGroups := specialGroups.ReadAll()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(previousUsableGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(previousRatios))
+		specialGroups.Clear()
+		specialGroups.AddAll(previousSpecialGroups)
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1}`))
+	specialGroups.Clear()
+	specialGroups.Set("source-a", map[string]string{"+:rogue-channel": "Rogue Channel"})
+
+	channel := &model.Channel{
+		Name:   "rogue-channel-playground",
+		Key:    "sk-playground-review",
+		Type:   constant.ChannelTypeOpenAI,
+		Status: common.ChannelStatusEnabled,
+		Group:  "rogue-channel",
+	}
+	require.NoError(t, db.Create(channel).Error)
+	require.NoError(t, db.Create(&model.Ability{
+		Group: "rogue-channel", Model: "review-model", ChannelId: channel.Id, Enabled: true,
+	}).Error)
+	model.InitChannelCache()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/pg/chat/completions", strings.NewReader(`{"model":"review-model","group":"rogue-channel"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	common.SetContextKey(c, constant.ContextKeyUsingGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserGroup, "default")
+	common.SetContextKey(c, constant.ContextKeyUserGroups, []string{"source-a"})
+
+	Distribute()(c)
+
+	assert.True(t, c.IsAborted())
+	assert.Equal(t, http.StatusForbidden, recorder.Code)
 }
 
 func TestChannelMatchesExpectedTaskPluginUsesPinnedLegacyIndex(t *testing.T) {

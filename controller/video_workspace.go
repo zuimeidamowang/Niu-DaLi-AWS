@@ -83,8 +83,9 @@ func videoWorkspaceModels(c *gin.Context) ([]videoWorkspaceModel, error) {
 		return items, nil
 	}
 	userGroup := common.GetContextKeyString(c, constant.ContextKeyUserGroup)
+	userGroups := service.GetRequestUserGroups(c, userGroup)
 	groups := make([]string, 0)
-	for group := range service.GetUserUsableGroups(userGroup) {
+	for group := range service.GetUserUsableGroupsForUser(userGroup, userGroups) {
 		if group != "" && group != "auto" && ratio_setting.ContainsGroupRatio(group) {
 			groups = append(groups, group)
 		}

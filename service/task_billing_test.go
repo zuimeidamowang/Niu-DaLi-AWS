@@ -217,6 +217,34 @@ func TestPriceDataReplaceAndApplyOtherRatios(t *testing.T) {
 	assert.Equal(t, 1.0, priceData.OtherRatioMultiplier())
 }
 
+func TestRecalculateTaskQuotaByTokensUsesSubmittedGroupRatio(t *testing.T) {
+	truncate(t)
+
+	originalModelRatios := ratio_setting.ModelRatio2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(originalModelRatios))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+	})
+	require.NoError(t, ratio_setting.UpdateModelRatioByJSONString(`{"task-group-billing-model":1}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":4}`))
+
+	const userID, channelID = 61, 61
+	seedUser(t, userID, 10000)
+	seedChannel(t, channelID)
+	task := makeTask(userID, channelID, 100, 0, BillingSourceWallet, 0)
+	task.TaskID = "task_group_billing_snapshot"
+	task.Group = "vip"
+	task.Properties.OriginModelName = "task-group-billing-model"
+	task.PrivateData.BillingContext.OriginModelName = "task-group-billing-model"
+	task.PrivateData.BillingContext.GroupRatio = 2.5
+	require.NoError(t, model.DB.Create(task).Error)
+
+	assert.True(t, RecalculateTaskQuotaByTokens(context.Background(), task, 1000))
+	assert.Equal(t, 2500, task.Quota, "settlement must keep the group ratio captured at task submission")
+	assert.Equal(t, 7600, getUserQuota(t, userID), "settlement should charge the snapshot ratio instead of the route group's current ratio")
+}
+
 func TestTaskBillingOtherFiltersHistoricalOtherRatios(t *testing.T) {
 	task := makeTask(1, 1, 100, 0, BillingSourceWallet, 0)
 	task.PrivateData.BillingContext.OtherRatios = map[string]float64{
@@ -502,6 +530,37 @@ func TestTaskBillingContextPriceDataFiltersMultiplier(t *testing.T) {
 		"size":     3,
 		"identity": 1,
 	}, priceData.OtherRatios())
+}
+
+func TestRealtimePreconsumeGroupRatioUsesBillingGroupAfterAutoRouting(t *testing.T) {
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	originalGroupGroupRatios := ratio_setting.GroupGroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+		require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(originalGroupGroupRatios))
+	})
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"vip":4}`))
+	require.NoError(t, ratio_setting.UpdateGroupGroupRatioByJSONString(`{}`))
+
+	for _, tc := range []struct {
+		name       string
+		userGroups []string
+		want       float64
+	}{
+		{name: "multiple assigned groups", userGroups: []string{"default", "vip"}, want: 1},
+		{name: "narrowed assignment", userGroups: []string{"vip"}, want: 1},
+		{name: "primary-only legacy assignment", userGroups: []string{"default"}, want: 4},
+		{name: "legacy user", userGroups: nil, want: 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &relaycommon.RelayInfo{
+				UserGroup:  "default",
+				UserGroups: tc.userGroups,
+				UsingGroup: "vip",
+			}
+			assert.Equal(t, tc.want, realtimePreconsumeGroupRatio(info))
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

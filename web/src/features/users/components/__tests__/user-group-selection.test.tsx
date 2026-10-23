@@ -44,6 +44,7 @@ const targetUser: User = {
   used_quota: 0,
   request_count: 0,
   group: 'legacy-user-group',
+  user_groups: ['legacy-user-group'],
 }
 
 function renderUserEditor() {
@@ -125,6 +126,36 @@ it('loads user groups, excludes channel groups, and preserves an unlisted histor
       expect.objectContaining({
         id: targetUser.id,
         group: targetUser.group,
+      })
+    )
+  )
+})
+
+it('lets an administrator add a channel access group and saves the full assignment set', async () => {
+  const user = userEvent.setup()
+  const { put } = renderUserEditor()
+
+  await screen.findByDisplayValue('Alice')
+  const accessGroups = screen.getByRole('combobox', {
+    name: 'Channel Access Groups',
+  })
+  const accessGroupLabel = screen.getByText('Channel Access Groups', {
+    selector: 'label',
+  })
+  expect(accessGroupLabel).toHaveAttribute('for', accessGroups.id)
+  await user.click(accessGroups)
+  await user.click(
+    await screen.findByRole('option', { name: 'premium-user-group' })
+  )
+  await user.keyboard('{Escape}')
+
+  await user.click(screen.getByRole('button', { name: 'Save changes' }))
+  await waitFor(() =>
+    expect(put).toHaveBeenCalledWith(
+      '/api/user/',
+      expect.objectContaining({
+        id: targetUser.id,
+        user_groups: ['legacy-user-group', 'premium-user-group'],
       })
     )
   )

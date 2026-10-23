@@ -19,15 +19,15 @@ For commercial licensing, please contact support@quantumnous.com
 import { z } from 'zod'
 
 import {
-  type PermissionCatalog,
-  type AdminPermissionMatrix,
   normalizeAdminPermissions,
+  type AdminPermissionMatrix,
+  type PermissionCatalog,
 } from '@/lib/admin-permissions'
 import { quotaUnitsToDollars } from '@/lib/format'
 import { ROLE } from '@/lib/roles'
 
 import { DEFAULT_GROUP } from '../constants'
-import { type UserFormData, type User } from '../types'
+import type { User, UserFormData } from '../types'
 
 // ============================================================================
 // Form Schema
@@ -40,6 +40,7 @@ export const userFormSchema = z.object({
   role: z.number().optional(),
   quota_dollars: z.number().min(0).optional(),
   group: z.string().optional(),
+  user_groups: z.array(z.string()).optional(),
   remark: z.string().optional(),
   admin_permissions: z
     .record(z.string(), z.record(z.string(), z.boolean()))
@@ -59,6 +60,7 @@ export const USER_FORM_DEFAULT_VALUES: UserFormValues = {
   role: 1, // Default to common user
   quota_dollars: 0,
   group: DEFAULT_GROUP,
+  user_groups: [DEFAULT_GROUP],
   remark: '',
   // Filled against the backend catalog at render time; see UsersMutateDrawer.
   admin_permissions: {},
@@ -104,6 +106,8 @@ export function transformFormDataToPayload(
     payload.id = userId
   }
 
+  payload.user_groups = data.user_groups ?? []
+
   return payload
 }
 
@@ -120,6 +124,7 @@ export function transformUserToFormDefaults(user: User): UserFormValues {
     role: user.role,
     quota_dollars: quotaUnitsToDollars(user.quota),
     group: user.group || DEFAULT_GROUP,
+    user_groups: user.user_groups ?? [user.group || DEFAULT_GROUP],
     remark: user.remark || '',
     admin_permissions: user.admin_permissions ?? {},
   }

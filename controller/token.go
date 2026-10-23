@@ -107,6 +107,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 		common.ApiError(c, err)
 		return false
 	}
+	userGroups := service.GetRequestUserGroups(c, userGroup)
 	seen := make(map[string]struct{}, len(groups))
 	for _, group := range groups {
 		if _, ok := seen[group]; ok {
@@ -114,7 +115,7 @@ func setTokenAutoGroups(c *gin.Context, token *model.Token, groups []string) boo
 			return false
 		}
 		seen[group] = struct{}{}
-		if !service.IsUserSelectableGroup(userGroup, group) {
+		if !service.IsUserSelectableGroupForUser(userGroup, group, userGroups) {
 			common.ApiErrorI18n(c, i18n.MsgTokenAutoGroupsInvalid, map[string]any{"Group": group})
 			return false
 		}
@@ -133,7 +134,7 @@ func validateTokenChannelGroup(c *gin.Context, group string) bool {
 		common.ApiError(c, err)
 		return false
 	}
-	if service.IsUserSelectableGroup(userGroup, group) {
+	if service.IsUserSelectableGroupForUser(userGroup, group, service.GetRequestUserGroups(c, userGroup)) {
 		return true
 	}
 	common.ApiErrorMsg(c, "所选渠道分组不可用")
@@ -193,7 +194,7 @@ func GetTokenAutoGroups(c *gin.Context) {
 		return
 	}
 	common.ApiSuccess(c, gin.H{
-		"groups":    service.GetUserAutoGroup(userGroup),
+		"groups":    service.GetUserAutoGroupForUser(userGroup, service.GetRequestUserGroups(c, userGroup)),
 		"max_count": setting.GetMaxTokenAutoGroups(),
 	})
 }

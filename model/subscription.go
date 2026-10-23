@@ -3,6 +3,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -185,8 +186,9 @@ type SubscriptionPlan struct {
 	QuotaResetPeriod        string `json:"quota_reset_period" gorm:"type:varchar(16);default:'never'"`
 	QuotaResetCustomSeconds int64  `json:"quota_reset_custom_seconds" gorm:"type:bigint;default:0"`
 
-	CreatedAt int64 `json:"created_at" gorm:"bigint"`
-	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
+	CreatedAt             int64 `json:"created_at" gorm:"bigint"`
+	UpdatedAt             int64 `json:"updated_at" gorm:"bigint"`
+	groupAccessChangedIDs []int `json:"-" gorm:"-"`
 }
 
 func (p *SubscriptionPlan) BeforeCreate(tx *gorm.DB) error {
@@ -277,8 +279,9 @@ type UserSubscription struct {
 	// Whether wallet fallback is allowed after this subscription's quota is exhausted (snapshot from plan)
 	AllowWalletOverflow bool `json:"allow_wallet_overflow"`
 
-	CreatedAt int64 `json:"created_at" gorm:"bigint"`
-	UpdatedAt int64 `json:"updated_at" gorm:"bigint"`
+	CreatedAt             int64 `json:"created_at" gorm:"bigint"`
+	UpdatedAt             int64 `json:"updated_at" gorm:"bigint"`
+	groupAccessChangedIDs []int `json:"-" gorm:"-"`
 }
 
 func (s *UserSubscription) BeforeCreate(tx *gorm.DB) error {
@@ -438,6 +441,51 @@ func getUserGroupByIdTx(tx *gorm.DB, userId int) (string, error) {
 	return group, nil
 }
 
+func syncMirroredUserGroupAssignmentTx(tx *gorm.DB, userId int, previousGroup, nextGroup string) ([]int, error) {
+	if previousGroup == "" || nextGroup == "" || previousGroup == nextGroup {
+		return nil, nil
+	}
+	assignments, err := GetUserGroupAssignmentsTx(tx, userId)
+	if err != nil {
+		return nil, err
+	}
+	if !sameUserGroupAssignments(assignments, []string{previousGroup}) {
+		return nil, nil
+	}
+	changed, err := SetUserGroupAssignmentsTx(tx, userId, []string{nextGroup})
+	if err != nil || !changed {
+		return nil, err
+	}
+	changedIDs, err := PruneDescendantUserGroupAssignmentsTx(tx, userId, []string{nextGroup})
+	if err != nil {
+		return nil, err
+	}
+	return append(changedIDs, userId), nil
+}
+
+func syncSubscriptionUserGroupTransitionTx(tx *gorm.DB, userId int, previousGroup, nextGroup string) ([]int, error) {
+	if previousGroup == "" || nextGroup == "" || previousGroup == nextGroup {
+		return nil, nil
+	}
+	var user User
+	if err := tx.Select("id", "role").First(&user, userId).Error; err != nil {
+		return nil, err
+	}
+	changedIDs, err := syncMirroredUserGroupAssignmentTx(tx, userId, previousGroup, nextGroup)
+	if err != nil {
+		return nil, err
+	}
+	if user.Role == common.RoleThirdLevelUser {
+		descendantIDs, err := UpdateThirdLevelUserDescendantGroupsTx(tx, userId, nextGroup)
+		if err != nil {
+			return nil, err
+		}
+		changedIDs = append(changedIDs, descendantIDs...)
+	}
+	slices.Sort(changedIDs)
+	return slices.Compact(changedIDs), nil
+}
+
 func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now int64) (string, error) {
 	if tx == nil || sub == nil {
 		return "", errors.New("invalid downgrade args")
@@ -499,6 +547,11 @@ func downgradeUserGroupForSubscriptionTx(tx *gorm.DB, sub *UserSubscription, now
 		Update("group", target).Error; err != nil {
 		return "", err
 	}
+	changedIDs, err := syncSubscriptionUserGroupTransitionTx(tx, sub.UserId, currentGroup, target)
+	if err != nil {
+		return "", err
+	}
+	sub.groupAccessChangedIDs = changedIDs
 	return target, nil
 }
 
@@ -523,7 +576,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 			return nil, errors.New("已达到该套餐购买上限")
 		}
 	}
-	nowUnix := GetDBTimestamp()
+	nowUnix := getDBTimestampWithDB(tx)
 	now := time.Unix(nowUnix, 0)
 	endUnix, err := calcPlanEndTime(now, plan)
 	if err != nil {
@@ -539,6 +592,7 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 	downgradeGroup := strings.TrimSpace(plan.DowngradeGroup)
 	prevGroup := ""
 	groupChanged := false
+	var groupAccessChangedIDs []int
 	inheritedGroup, inherited, err := GetThirdLevelAncestorGroupTx(tx, userId)
 	if err != nil {
 		return nil, err
@@ -567,6 +621,10 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 				Update("group", upgradeGroup).Error; err != nil {
 				return nil, err
 			}
+			groupAccessChangedIDs, err = syncSubscriptionUserGroupTransitionTx(tx, userId, currentGroup, upgradeGroup)
+			if err != nil {
+				return nil, err
+			}
 			groupChanged = true
 		}
 	}
@@ -575,23 +633,24 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 		allowWalletOverflow = *plan.AllowWalletOverflow
 	}
 	sub := &UserSubscription{
-		UserId:              userId,
-		PlanId:              plan.Id,
-		GroupChanged:        groupChanged,
-		AmountTotal:         plan.TotalAmount,
-		AmountUsed:          0,
-		StartTime:           now.Unix(),
-		EndTime:             endUnix,
-		Status:              "active",
-		Source:              source,
-		LastResetTime:       lastReset,
-		NextResetTime:       nextReset,
-		UpgradeGroup:        upgradeGroup,
-		PrevUserGroup:       prevGroup,
-		DowngradeGroup:      downgradeGroup,
-		AllowWalletOverflow: allowWalletOverflow,
-		CreatedAt:           common.GetTimestamp(),
-		UpdatedAt:           common.GetTimestamp(),
+		UserId:                userId,
+		PlanId:                plan.Id,
+		GroupChanged:          groupChanged,
+		AmountTotal:           plan.TotalAmount,
+		AmountUsed:            0,
+		StartTime:             now.Unix(),
+		EndTime:               endUnix,
+		Status:                "active",
+		Source:                source,
+		LastResetTime:         lastReset,
+		NextResetTime:         nextReset,
+		UpgradeGroup:          upgradeGroup,
+		PrevUserGroup:         prevGroup,
+		DowngradeGroup:        downgradeGroup,
+		AllowWalletOverflow:   allowWalletOverflow,
+		CreatedAt:             common.GetTimestamp(),
+		UpdatedAt:             common.GetTimestamp(),
+		groupAccessChangedIDs: groupAccessChangedIDs,
 	}
 	if err := tx.Create(sub).Error; err != nil {
 		return nil, err
@@ -602,6 +661,15 @@ func CreateUserSubscriptionFromPlanTx(tx *gorm.DB, userId int, plan *Subscriptio
 func refreshSubscriptionUserGroupCache(userId int, operation string) {
 	if err := RefreshUserGroupCache(userId); err != nil {
 		common.SysError(fmt.Sprintf("failed to refresh user group cache after %s for user %d: %v", operation, userId, err))
+	}
+}
+
+func finalizeSubscriptionGroupAccessChanges(userIDs []int, operation string) {
+	for _, userID := range userIDs {
+		refreshSubscriptionUserGroupCache(userID, operation)
+		if _, err := RevokeAllUserSessions(userID, "subscription_group_update"); err != nil {
+			common.SysError(fmt.Sprintf("failed to revoke user sessions after %s for user %d: %v", operation, userID, err))
+		}
 	}
 }
 
@@ -621,6 +689,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	var logMoney float64
 	var logPaymentMethod string
 	groupChanged := false
+	var groupAccessChangedIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var order SubscriptionOrder
 		if err := lockForUpdate(tx).Where(refCol+" = ?", tradeNo).First(&order).Error; err != nil {
@@ -653,6 +722,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 			return err
 		}
 		groupChanged = subscription.GroupChanged
+		groupAccessChangedIDs = subscription.groupAccessChangedIDs
 		if err := upsertSubscriptionTopUpTx(tx, &order); err != nil {
 			return err
 		}
@@ -679,6 +749,7 @@ func CompleteSubscriptionOrder(tradeNo string, providerPayload string, expectedP
 	if groupChanged && logUserId > 0 {
 		refreshSubscriptionUserGroupCache(logUserId, "subscription payment completion")
 	}
+	finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "subscription payment completion")
 	if logUserId > 0 {
 		msg := fmt.Sprintf("订阅购买成功，套餐: %s，支付金额: %.2f，支付方式: %s", logPlanTitle, logMoney, logPaymentMethod)
 		RecordLog(logUserId, LogTypeTopup, msg)
@@ -758,6 +829,7 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 	}
 	groupChanged := false
 	upgradeGroup := ""
+	var groupAccessChangedIDs []int
 	err = DB.Transaction(func(tx *gorm.DB) error {
 		// 与 CompleteSubscriptionOrder 一致：先锁用户行，再做购买次数检查。
 		var userRow User
@@ -768,19 +840,22 @@ func AdminBindSubscription(userId int, planId int, sourceNote string) (string, e
 		if err == nil {
 			groupChanged = subscription.GroupChanged
 			upgradeGroup = strings.TrimSpace(subscription.UpgradeGroup)
+			groupAccessChangedIDs = subscription.groupAccessChangedIDs
 		}
 		return err
 	})
 	if err != nil {
 		return "", err
 	}
+	message := ""
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription creation")
 		if upgradeGroup != "" {
-			return fmt.Sprintf("用户分组将升级到 %s", upgradeGroup), nil
+			message = fmt.Sprintf("用户分组将升级到 %s", upgradeGroup)
 		}
 	}
-	return "", nil
+	finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "admin subscription creation")
+	return message, nil
 }
 
 func calcSubscriptionBalanceQuota(priceAmount float64) (int, error) {
@@ -806,6 +881,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	var logMoney float64
 	var chargedQuota int
 	groupChanged := false
+	var groupAccessChangedIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		plan, err := getSubscriptionPlanByIdTx(tx, planId)
 		if err != nil {
@@ -867,6 +943,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 		logMoney = plan.PriceAmount
 		chargedQuota = requiredQuota
 		groupChanged = subscription.GroupChanged
+		groupAccessChangedIDs = subscription.groupAccessChangedIDs
 		return nil
 	})
 	if err != nil {
@@ -881,6 +958,7 @@ func PurchaseSubscriptionWithBalance(userId int, planId int) error {
 	if groupChanged {
 		refreshSubscriptionUserGroupCache(userId, "subscription balance purchase")
 	}
+	finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "subscription balance purchase")
 	msg := fmt.Sprintf("使用余额购买订阅成功，套餐: %s，支付金额: %.2f，扣除额度: %d", logPlanTitle, logMoney, chargedQuota)
 	RecordLog(userId, LogTypeTopup, msg)
 	return nil
@@ -974,6 +1052,7 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 	cacheGroup := ""
 	downgradeGroup := ""
 	var userId int
+	var groupAccessChangedIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
 		if err := lockForUpdate(tx).
@@ -992,6 +1071,7 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 		if err != nil {
 			return err
 		}
+		groupAccessChangedIDs = sub.groupAccessChangedIDs
 		if target != "" {
 			cacheGroup = target
 			downgradeGroup = target
@@ -1004,6 +1084,7 @@ func AdminInvalidateUserSubscription(userSubscriptionId int) (string, error) {
 	if cacheGroup != "" && userId > 0 {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription update")
 	}
+	finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "admin subscription update")
 	if downgradeGroup != "" {
 		return fmt.Sprintf("用户分组将回退到 %s", downgradeGroup), nil
 	}
@@ -1019,6 +1100,7 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
 	cacheGroup := ""
 	downgradeGroup := ""
 	var userId int
+	var groupAccessChangedIDs []int
 	err := DB.Transaction(func(tx *gorm.DB) error {
 		var sub UserSubscription
 		if err := lockForUpdate(tx).
@@ -1030,6 +1112,7 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
 		if err != nil {
 			return err
 		}
+		groupAccessChangedIDs = sub.groupAccessChangedIDs
 		if target != "" {
 			cacheGroup = target
 			downgradeGroup = target
@@ -1045,6 +1128,7 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (string, error) {
 	if cacheGroup != "" && userId > 0 {
 		refreshSubscriptionUserGroupCache(userId, "admin subscription deletion")
 	}
+	finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "admin subscription deletion")
 	if downgradeGroup != "" {
 		return fmt.Sprintf("用户分组将回退到 %s", downgradeGroup), nil
 	}
@@ -1203,6 +1287,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 	}
 	for userId := range userIds {
 		cacheGroup := ""
+		var groupAccessChangedIDs []int
 		userExpiredCount := 0
 		err := DB.Transaction(func(tx *gorm.DB) error {
 			res := tx.Model(&UserSubscription{}).
@@ -1284,6 +1369,10 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 				Update("group", target).Error; err != nil {
 				return err
 			}
+			groupAccessChangedIDs, err = syncSubscriptionUserGroupTransitionTx(tx, userId, currentGroup, target)
+			if err != nil {
+				return err
+			}
 			cacheGroup = target
 			return nil
 		})
@@ -1294,6 +1383,7 @@ func ExpireDueSubscriptions(limit int) (int, error) {
 		if cacheGroup != "" {
 			refreshSubscriptionUserGroupCache(userId, "subscription expiration")
 		}
+		finalizeSubscriptionGroupAccessChanges(groupAccessChangedIDs, "subscription expiration")
 	}
 	return expiredCount, nil
 }

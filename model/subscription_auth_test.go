@@ -17,7 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T) {
+func TestSubscriptionGroupTransitionsInvalidateSessionsWhenAssignmentsChange(t *testing.T) {
 	truncateTables(t)
 	useUserCacheMiniRedis(t)
 	now := time.Now().Unix()
@@ -27,6 +27,7 @@ func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Group:       "default",
+		AffCode:     "subscription-auth-user",
 		AuthVersion: 1,
 	}
 	require.NoError(t, DB.Create(&user).Error)
@@ -55,34 +56,72 @@ func TestSubscriptionGroupTransitionsPreserveAuthVersionAndSessions(t *testing.T
 	subscription, err := CreateUserSubscriptionFromPlanTx(DB, user.Id, plan, "test")
 	require.NoError(t, err)
 	require.Equal(t, "default", subscription.PrevUserGroup)
-	require.NoError(t, RefreshUserGroupCache(user.Id))
+	finalizeSubscriptionGroupAccessChanges(subscription.groupAccessChangedIDs, "subscription test upgrade")
 
 	var updated User
 	require.NoError(t, DB.First(&updated, user.Id).Error)
 	assert.Equal(t, "pro", updated.Group)
-	assert.EqualValues(t, 1, updated.AuthVersion)
+	assert.EqualValues(t, 2, updated.AuthVersion)
+	assignedGroups, err := GetUserGroupAssignments(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"pro"}, assignedGroups)
 	var session UserSession
 	require.NoError(t, DB.First(&session, "sid = ?", "subscription-auth-session").Error)
-	assert.Equal(t, UserSessionStatusActive, session.Status)
+	assert.Equal(t, UserSessionStatusRevoked, session.Status)
 	cached, err := GetUserCache(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "pro", cached.Group)
-	assert.EqualValues(t, 1, cached.AuthVersion)
+	assert.Equal(t, []string{"pro"}, cached.UserGroups)
+	assert.EqualValues(t, 2, cached.AuthVersion)
 
 	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
 		target, err := downgradeUserGroupForSubscriptionTx(tx, subscription, now+1)
 		assert.Equal(t, "default", target)
 		return err
 	}))
-	require.NoError(t, RefreshUserGroupCache(user.Id))
+	finalizeSubscriptionGroupAccessChanges(subscription.groupAccessChangedIDs, "subscription test downgrade")
 	require.NoError(t, DB.First(&updated, user.Id).Error)
 	assert.Equal(t, "default", updated.Group)
-	assert.EqualValues(t, 1, updated.AuthVersion)
+	assert.EqualValues(t, 3, updated.AuthVersion)
+	assignedGroups, err = GetUserGroupAssignments(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default"}, assignedGroups)
 	require.NoError(t, DB.First(&session, "sid = ?", "subscription-auth-session").Error)
-	assert.Equal(t, UserSessionStatusActive, session.Status)
+	assert.Equal(t, UserSessionStatusRevoked, session.Status)
 	cached, err = GetUserCache(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "default", cached.Group)
+	assert.Equal(t, []string{"default"}, cached.UserGroups)
+
+	multiGroupUser := User{
+		Username:    "subscription-multi-group-user",
+		Password:    "unused-password-hash",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AffCode:     "subscription-multi-group-user",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&multiGroupUser).Error)
+	require.NoError(t, ReplaceUserGroupAssignmentsTx(DB, multiGroupUser.Id, []string{"default", "vip"}))
+	multiSubscription, err := CreateUserSubscriptionFromPlanTx(DB, multiGroupUser.Id, plan, "test")
+	require.NoError(t, err)
+	require.NoError(t, RefreshUserGroupCache(multiGroupUser.Id))
+	require.NoError(t, DB.First(&multiGroupUser, multiGroupUser.Id).Error)
+	assert.Equal(t, "pro", multiGroupUser.Group)
+	assignedGroups, err = GetUserGroupAssignments(multiGroupUser.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default", "vip"}, assignedGroups)
+	multiCached, err := GetUserCache(multiGroupUser.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default", "vip"}, multiCached.UserGroups)
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		_, err := downgradeUserGroupForSubscriptionTx(tx, multiSubscription, now+1)
+		return err
+	}))
+	assignedGroups, err = GetUserGroupAssignments(multiGroupUser.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default", "vip"}, assignedGroups)
 }
 
 func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *testing.T) {
@@ -93,7 +132,7 @@ func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *tes
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
 	require.NoError(t, err)
 	DB, LOG_DB = db, db
-	require.NoError(t, db.AutoMigrate(&User{}, &SubscriptionPlan{}, &UserSubscription{}))
+	require.NoError(t, db.AutoMigrate(&User{}, &UserGroupAssignment{}, &SubscriptionPlan{}, &UserSubscription{}))
 	sqlDB, err := db.DB()
 	require.NoError(t, err)
 	sqlDB.SetMaxOpenConns(4)
@@ -109,9 +148,11 @@ func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *tes
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
 		Group:       "default",
+		AffCode:     "subscription-cache-failure",
 		AuthVersion: 1,
 	}
 	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, ReplaceUserGroupAssignmentsTx(DB, user.Id, []string{"default", "vip"}))
 	plan := &SubscriptionPlan{
 		Title:         "Cache failure plan",
 		DurationUnit:  SubscriptionDurationMonth,
@@ -149,6 +190,93 @@ func TestSubscriptionGroupCacheRefreshFailureDoesNotChangeCommittedResult(t *tes
 	assert.Equal(t, "active", subscription.Status)
 }
 
+func TestAdminBindSubscriptionRefreshesAndRevokesChangedDescendantAccess(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+	parent := User{
+		Username: "subscription-admin-bind-third-level",
+		Role:     common.RoleThirdLevelUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+		AffCode:  "subscription-admin-bind-third-level",
+	}
+	require.NoError(t, DB.Create(&parent).Error)
+	manager := User{
+		Username:  "subscription-admin-bind-manager",
+		Role:      common.RoleUserManager,
+		Status:    common.UserStatusEnabled,
+		Group:     "default",
+		CreatorID: parent.Id,
+		AffCode:   "subscription-admin-bind-manager",
+	}
+	require.NoError(t, DB.Create(&manager).Error)
+	child := User{
+		Username:  "subscription-admin-bind-child",
+		Role:      common.RoleCommonUser,
+		Status:    common.UserStatusEnabled,
+		Group:     "default",
+		CreatorID: manager.Id,
+		AffCode:   "subscription-admin-bind-child",
+	}
+	require.NoError(t, DB.Create(&child).Error)
+	for _, user := range []User{manager, child} {
+		require.NoError(t, DB.Create(&UserSession{
+			SID:             user.Username + "-session",
+			UserID:          user.Id,
+			Version:         1,
+			UserAuthVersion: 1,
+			Status:          UserSessionStatusActive,
+			RefreshHash:     user.Username + "-refresh-hash",
+			LoginMethod:     "password",
+			LastActiveAt:    time.Now().Unix(),
+			ExpiresAt:       time.Now().Add(time.Hour).Unix(),
+		}).Error)
+	}
+
+	for _, userID := range []int{parent.Id, manager.Id, child.Id} {
+		_, err := GetUserCache(userID)
+		require.NoError(t, err)
+	}
+	plan := &SubscriptionPlan{
+		Title:         "Admin bind inherited group plan",
+		DurationUnit:  SubscriptionDurationMonth,
+		DurationValue: 1,
+		TotalAmount:   100,
+		UpgradeGroup:  "pro",
+		Enabled:       true,
+	}
+	require.NoError(t, DB.Create(plan).Error)
+	InvalidateSubscriptionPlanCache(plan.Id)
+
+	message, err := AdminBindSubscription(parent.Id, plan.Id, "test")
+	require.NoError(t, err)
+	assert.Contains(t, message, "pro")
+
+	for _, expected := range []struct {
+		user *User
+		want string
+	}{{&parent, "pro"}, {&manager, "pro"}, {&child, "pro"}} {
+		var stored User
+		require.NoError(t, DB.First(&stored, expected.user.Id).Error)
+		assert.Equal(t, expected.want, stored.Group)
+		cached, err := GetUserCache(expected.user.Id)
+		require.NoError(t, err)
+		assert.Equal(t, expected.want, cached.Group)
+	}
+
+	for _, userID := range []int{manager.Id, child.Id} {
+		groups, err := GetUserGroupAssignments(userID)
+		require.NoError(t, err)
+		assert.Empty(t, groups)
+		cached, err := GetUserCache(userID)
+		require.NoError(t, err)
+		assert.Empty(t, cached.UserGroups)
+		var session UserSession
+		require.NoError(t, DB.First(&session, "user_id = ?", userID).Error)
+		assert.Equal(t, UserSessionStatusRevoked, session.Status)
+	}
+}
+
 func TestExpiredSubscriptionsForHardDeletedUsersDoNotBlockExpiration(t *testing.T) {
 	truncateTables(t)
 	now := GetDBTimestamp()
@@ -157,7 +285,7 @@ func TestExpiredSubscriptionsForHardDeletedUsersDoNotBlockExpiration(t *testing.
 		Password:    "unused-password-hash",
 		Role:        common.RoleCommonUser,
 		Status:      common.UserStatusEnabled,
-		Group:       "default",
+		Group:       "pro",
 		AuthVersion: 1,
 	}
 	require.NoError(t, DB.Create(&activeUser).Error)
@@ -186,6 +314,12 @@ func TestExpiredSubscriptionsForHardDeletedUsersDoNotBlockExpiration(t *testing.
 
 	require.NoError(t, err)
 	assert.Equal(t, 2, expiredCount)
+	var updated User
+	require.NoError(t, DB.First(&updated, activeUser.Id).Error)
+	assert.Equal(t, "default", updated.Group)
+	assignedGroups, err := GetUserGroupAssignments(activeUser.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"default"}, assignedGroups)
 	var expiredSubscriptions []UserSubscription
 	require.NoError(t, DB.Order("user_id asc").Find(&expiredSubscriptions).Error)
 	require.Len(t, expiredSubscriptions, 2)

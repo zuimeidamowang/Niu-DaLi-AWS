@@ -86,6 +86,27 @@ func TestPendingUserAuthFenceRejectsStaleCacheWrite(t *testing.T) {
 	assert.False(t, server.Exists(getUserCacheKey(userID)))
 }
 
+func TestGetUserCacheFailsClosedWhenAuthVersionFloorIsUnavailable(t *testing.T) {
+	truncateTables(t)
+	server := useUserCacheMiniRedis(t)
+	user := User{
+		Username:    "auth-fence-redis-outage",
+		Password:    "password",
+		Role:        common.RoleCommonUser,
+		Status:      common.UserStatusEnabled,
+		Group:       "default",
+		AuthVersion: 1,
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, SetUserAuthVersionFence(user.Id, 2))
+	server.Close()
+
+	cached, err := GetUserCache(user.Id)
+
+	assert.Nil(t, cached)
+	assert.Error(t, err, "an unavailable auth-version floor must not allow the older database snapshot")
+}
+
 func TestUserAuthFieldUpdateRejectsVersionMismatch(t *testing.T) {
 	useUserCacheMiniRedis(t)
 	const userID = 4202
@@ -137,10 +158,12 @@ func TestRefreshUserGroupCacheRepairsDelayedSameVersionWrite(t *testing.T) {
 	<-firstSnapshotRead
 
 	require.NoError(t, DB.Model(&User{}).Where("id = ?", user.Id).Update("group", "pro").Error)
+	require.NoError(t, ReplaceUserGroupAssignmentsTx(DB, user.Id, []string{"pro"}))
 	require.NoError(t, RefreshUserGroupCache(user.Id))
 	cached, err := cacheGetUserBase(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "pro", cached.Group)
+	assert.Equal(t, []string{"pro"}, cached.UserGroups)
 	assert.EqualValues(t, 1, cached.AuthVersion)
 
 	close(releaseDelayedRefresh)
@@ -148,7 +171,48 @@ func TestRefreshUserGroupCacheRepairsDelayedSameVersionWrite(t *testing.T) {
 	cached, err = cacheGetUserBase(user.Id)
 	require.NoError(t, err)
 	assert.Equal(t, "pro", cached.Group)
+	assert.Equal(t, []string{"pro"}, cached.UserGroups)
 	assert.EqualValues(t, 1, cached.AuthVersion)
+}
+
+func TestClearBindingPreservesAssignedUserGroupsInCache(t *testing.T) {
+	truncateTables(t)
+	useUserCacheMiniRedis(t)
+
+	user := User{
+		Username:   "clear-binding-group-cache",
+		Role:       common.RoleCommonUser,
+		Status:     common.UserStatusEnabled,
+		Group:      "default",
+		GitHubId:   "clear-binding-github",
+		UserGroups: []string{"vip"},
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, populateUserCache(user))
+
+	user = User{Id: user.Id}
+	require.NoError(t, user.ClearBinding("github"))
+
+	cached, err := cacheGetUserBase(user.Id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"vip"}, cached.UserGroups)
+}
+
+func TestEmptyUserGroupAssignmentStaysExplicitWhenLoaded(t *testing.T) {
+	truncateTables(t)
+	user := User{
+		Username: "empty-group-assignment",
+		Role:     common.RoleCommonUser,
+		Status:   common.UserStatusEnabled,
+		Group:    "default",
+	}
+	require.NoError(t, DB.Create(&user).Error)
+	require.NoError(t, ReplaceUserGroupAssignmentsTx(DB, user.Id, []string{}))
+
+	loaded, err := GetUserById(user.Id, false)
+	require.NoError(t, err)
+	require.NotNil(t, loaded.UserGroups, "an explicit no-access assignment must not become a legacy nil assignment")
+	assert.Empty(t, loaded.UserGroups)
 }
 
 func TestCommittedUserAuthVersionPermanentlyRejectsDelayedCacheFill(t *testing.T) {

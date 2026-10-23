@@ -27,6 +27,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/config"
+	"github.com/QuantumNous/new-api/setting/ratio_setting"
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -88,7 +89,7 @@ func setupResponsesWSRequestTest(t *testing.T) (*model.User, *model.Token) {
 		setting.ModelRequestRateLimitMutex.Unlock()
 		require.NoError(t, sqlDB.Close())
 	})
-	require.NoError(t, db.AutoMigrate(&model.User{}, &model.Token{}))
+	require.NoError(t, db.AutoMigrate(&model.User{}, &model.UserGroupAssignment{}, &model.Token{}))
 	// The shared in-memory limiter outlives each database fixture. Give every
 	// user a separate quota bucket, including when the tests run with -count.
 	user := &model.User{Id: 5062000 + int(responsesWSTestUserSequence.Add(1)), Username: "responses-ws-user", Status: common.UserStatusEnabled, Group: "default", Quota: 1000, AuthVersion: 1}
@@ -132,6 +133,14 @@ func newResponsesWSTestRunner(t *testing.T, token *model.Token) (relay.Responses
 
 func TestResponsesWSRequestRunnerRefreshesBillingContextAndCleansBody(t *testing.T) {
 	user, token := setupResponsesWSRequestTest(t)
+	originalUserGroups := setting.UserUsableGroups2JSONString()
+	originalGroupRatios := ratio_setting.GroupRatio2JSONString()
+	t.Cleanup(func() {
+		require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(originalUserGroups))
+		require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(originalGroupRatios))
+	})
+	require.NoError(t, setting.UpdateUserUsableGroupsByJSONString(`{"default":"Default","updated":"Updated"}`))
+	require.NoError(t, ratio_setting.UpdateGroupRatioByJSONString(`{"default":1,"updated":1}`))
 	allowedIP := "203.0.113.8"
 	require.NoError(t, model.DB.Model(token).Update("allow_ips", allowedIP).Error)
 	runner, handshake := newResponsesWSTestRunner(t, token)
@@ -167,6 +176,8 @@ func TestResponsesWSRequestRunnerRefreshesBillingContextAndCleansBody(t *testing
 	require.NoError(t, model.DB.Model(user).Updates(map[string]any{
 		"group": "updated", "setting": `{"billing_preference":"wallet_only"}`,
 	}).Error)
+	_, err = model.SetUserGroupAssignmentsTx(model.DB, user.Id, []string{"updated"})
+	require.NoError(t, err)
 	request = httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"second"}`))
 	require.Nil(t, runner(request, "ws-second", func(c *gin.Context) *types.NewAPIError {
 		assert.Equal(t, 2, c.GetInt("token_quota"))

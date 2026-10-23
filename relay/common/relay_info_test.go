@@ -49,6 +49,25 @@ func TestRelayInfoGetFinalRequestRelayFormatNilReceiver(t *testing.T) {
 	require.Equal(t, types.RelayFormat(""), info.GetFinalRequestRelayFormat())
 }
 
+func TestRelayInfoGetBillingGroup(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		userGroups []string
+		want       string
+	}{
+		{name: "multiple channel groups use primary billing group", userGroups: []string{"default", "vip"}, want: "default"},
+		{name: "narrowed channel group uses primary billing group", userGroups: []string{"vip"}, want: "default"},
+		{name: "primary-only assignment keeps legacy token group", userGroups: []string{"default"}, want: "vip"},
+		{name: "legacy user keeps token group", userGroups: nil, want: "vip"},
+		{name: "explicit empty assignment uses primary group", userGroups: []string{}, want: "default"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			info := &RelayInfo{UserGroup: "default", UserGroups: tc.userGroups, UsingGroup: "vip"}
+			require.Equal(t, tc.want, info.GetBillingGroup())
+		})
+	}
+}
+
 func TestRelayInfoMetaTypedNilReceiver(t *testing.T) {
 	var info *RelayInfo
 	var meta convmeta.Meta = info

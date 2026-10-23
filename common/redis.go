@@ -218,6 +218,15 @@ func RedisHGetObj(key string, obj any) error {
 					return fmt.Errorf("failed to parse bool field %s: %w", fieldName, err)
 				}
 				fieldValue.SetBool(boolValue)
+			case reflect.Slice:
+				if fieldValue.Type().Elem().Kind() != reflect.String {
+					return fmt.Errorf("unsupported slice field type: %s for field %s", fieldValue.Type(), fieldName)
+				}
+				var stringValues []string
+				if err := Unmarshal([]byte(value), &stringValues); err != nil {
+					return fmt.Errorf("failed to parse slice field %s: %w", fieldName, err)
+				}
+				fieldValue.Set(reflect.ValueOf(stringValues))
 			case reflect.Struct:
 				// Special handling for gorm.DeletedAt
 				if fieldValue.Type().String() == "gorm.DeletedAt" {
