@@ -39,8 +39,8 @@ export type TopNavLink = {
  *   console: true,
  *   pricing: { enabled: true, requireAuth: false },
  *   rankings: { enabled: true, requireAuth: false },
- *   docs: true,
- *   about: true
+ *   docs: false,
+ *   about: false
  * }
  */
 export function useTopNavLinks(): TopNavLink[] {
@@ -54,9 +54,6 @@ export function useTopNavLinks(): TopNavLink[] {
       status as Record<string, unknown> | null
     )
   }, [status])
-
-  // Documentation link (may be external)
-  const docsLink: string | undefined = status?.docs_link as string | undefined
 
   const isAuthed = !!auth?.user
 
@@ -101,20 +98,6 @@ export function useTopNavLinks(): TopNavLink[] {
       href: canvasLink.trim(),
       external: true,
     })
-  }
-
-  // Docs (supports external links)
-  if (modules?.docs !== false) {
-    if (docsLink) {
-      links.push({ title: t('Docs'), href: docsLink, external: true })
-    } else {
-      links.push({ title: t('Docs'), href: '/docs' })
-    }
-  }
-
-  // About
-  if (modules?.about !== false) {
-    links.push({ title: t('About'), href: '/about' })
   }
 
   return links
