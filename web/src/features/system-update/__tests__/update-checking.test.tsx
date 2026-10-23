@@ -393,22 +393,38 @@ describe('version label presentation', () => {
     })
     await waitFor(() => expect(trigger).toHaveAttribute('aria-busy', 'false'))
     expect(within(trigger).getByText(release.tag_name)).toBeInTheDocument()
+    expect(trigger).toHaveAccessibleName(
+      `System updates, current version: ${release.tag_name}`
+    )
     expect(
       within(trigger).queryByText('Update available')
     ).not.toBeInTheDocument()
   })
 
-  test('shows an unknown-version label when the server has not supplied a version', async () => {
+  test('shows the latest release version when the server has no version', async () => {
     client.setQueryData(STATUS_QUERY_KEY, { version: '' })
     render(<SystemUpdateAction presentation='version' />, { wrapper: Wrapper })
-    const trigger = screen.getByRole('button', {
-      name: 'System updates, current version: Unknown version',
-    })
-    expect(within(trigger).getByText('Unknown version')).toBeInTheDocument()
+    const trigger = screen.getByRole('button')
     await waitFor(() => expect(trigger).toHaveAttribute('aria-busy', 'false'))
+    expect(within(trigger).getByText(release.tag_name)).toBeInTheDocument()
     expect(
       within(trigger).queryByText('Update available')
     ).not.toBeInTheDocument()
+  })
+
+  test('shows the release version instead of a commit hash in the header', async () => {
+    const commitHash = '4c5557ad9127'
+    client.setQueryData(STATUS_QUERY_KEY, { version: commitHash })
+    vi.spyOn(api, 'get').mockResolvedValue({
+      data: { success: true, data: { version: commitHash } },
+    })
+    render(<SystemUpdateAction presentation='version' />, { wrapper: Wrapper })
+    const trigger = screen.getByRole('button')
+
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-busy', 'false'))
+    expect(within(trigger).getByText(release.tag_name)).toBeInTheDocument()
+    expect(within(trigger).queryByText(commitHash)).not.toBeInTheDocument()
+    expect(trigger).toHaveAccessibleName(`Latest version: ${release.tag_name}`)
   })
 
   test('retains the version after a failed check and exposes the error in its tooltip and details', async () => {
