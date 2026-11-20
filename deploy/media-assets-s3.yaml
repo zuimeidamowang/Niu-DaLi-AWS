@@ -1,0 +1,60 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Private input media storage for the new-api gateway
+Parameters:
+  GatewayRoleName:
+    Type: String
+    Description: Existing EC2 or ECS role used by the gateway application
+Resources:
+  InputMediaBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+  InputMediaBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref InputMediaBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt InputMediaBucket.Arn
+              - !Sub '${InputMediaBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+  GatewayInputMediaPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: niu-dali-private-input-media
+      Roles:
+        - !Ref GatewayRoleName
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:PutObject
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub '${InputMediaBucket.Arn}/input-media/*'
+Outputs:
+  BucketName:
+    Value: !Ref InputMediaBucket
+  Region:
+    Value: !Ref AWS::Region

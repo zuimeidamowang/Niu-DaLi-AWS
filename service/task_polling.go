@@ -291,6 +291,7 @@ func updateBatchTasks(ctx context.Context, adaptor BatchTaskPollingAdaptor, chan
 		common.SysLog(fmt.Sprintf("Get Suno Task parse body error: %v", err))
 		return recordPollFailureForTasks(ctx, adaptor, tasks, pollClassTransport, resp.StatusCode, err.Error())
 	}
+	responseBody = RedactMediaAssetCapabilities(responseBody)
 	switch classifyPollHTTP(resp.StatusCode) {
 	case pollClassNotFound:
 		return failTasksFromPoll(ctx, adaptor, tasks, fmt.Sprintf("upstream task not found (HTTP %d)", resp.StatusCode))
@@ -503,6 +504,8 @@ func updateVideoSingleTask(ctx context.Context, adaptor TaskPollingAdaptor, ch *
 	if err != nil {
 		return recordPollFailure(ctx, adaptor, task, snap.Status, pollClassTransport, resp.StatusCode, err.Error())
 	}
+
+	responseBody = RedactMediaAssetCapabilities(responseBody)
 
 	logger.LogDebug(ctx, "updateVideoSingleTask response: %s", responseBody)
 
@@ -771,6 +774,7 @@ func unrecognizedPollDetail(reason string, body []byte) string {
 }
 
 func recordPollFailure(ctx context.Context, adaptor TaskPollingAdaptor, task *model.Task, fromStatus model.TaskStatus, class string, statusCode int, detail string) error {
+	detail = string(RedactMediaAssetCapabilities([]byte(detail)))
 	task.PrivateData.PollFailures++
 	if class == pollClassUnrecognized || class == pollClassHookError {
 		// The redacted body is intentionally not persisted to Task.Data on these

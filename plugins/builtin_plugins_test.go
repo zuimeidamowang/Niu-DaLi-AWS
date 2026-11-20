@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var expectedKeys = []string{"88api-seedance", "alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "mengwuxian", "sora", "sunoapi", "vertex-ai", "vidu"}
+var expectedKeys = []string{"88api-seedance", "alibaba", "doubao", "google", "hailuo", "jimeng", "kling", "mengwuxian", "routek-seedance", "sora", "sunoapi", "vertex-ai", "vidu"}
 
 func TestBuiltInVendorPluginsDeclareNativeRoutesAndLegacyChannelTypes(t *testing.T) {
 	generation := jsplugin.DefaultRegistry.Generation()
@@ -447,7 +447,7 @@ func TestBuiltInTaskPluginResponsesAndUsageContracts(t *testing.T) {
 					break
 				}
 			}
-			require.Equal(t, key != "mengwuxian" && key != "88api-seedance", foundResponses, "plugins without a Responses surface must not claim its models")
+			require.Equal(t, key != "mengwuxian" && key != "88api-seedance" && key != "routek-seedance", foundResponses, "plugins without a Responses surface must not claim its models")
 			if foundResponses {
 				assert.Equal(t, []string{"stream", "sync", "background"}, responsesClaim.Supports)
 			}
@@ -485,7 +485,7 @@ func TestBuiltInResponsesDecodersEchoChannelMappedAlias(t *testing.T) {
 			registry := jsplugin.NewRegistry()
 			plugin, registerErr := registry.RegisterFactory(source, jsplugin.Options{Key: key})
 			require.NoError(t, registerErr)
-			if key == "mengwuxian" || key == "88api-seedance" {
+			if key == "mengwuxian" || key == "88api-seedance" || key == "routek-seedance" {
 				return
 			}
 			require.NotEmpty(t, plugin.Meta.Models)
@@ -746,5 +746,211 @@ func TestSeedance88ExtendedInputs(t *testing.T) {
 	} {
 		_, err := decodeSeedance88Request(t, plugin, "seedance-2.0官方版", map[string]any{"kind": "json", "value": map[string]any{"prompt": "walk", "metadata": metadata}})
 		require.Error(t, err)
+	}
+}
+
+func TestRoutekSeedanceConvertsPlatformMediaAndPreservesGenerationParameters(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	assert.Equal(t, "1.1.0", plugin.Meta.Version)
+	assert.Contains(t, plugin.Meta.RequiredCapabilities, jsplugin.CapabilityMediaAssets)
+	const model = "doubao-seedance-2-5"
+	assets := map[string]any{
+		"media_image": map[string]any{"type": "image", "url": "https://platform.example/image/source?signature=test", "fileRef": "asset_file:media_image"},
+		"media_video": map[string]any{"type": "video", "url": "https://platform.example/video/source?signature=test", "fileRef": "asset_file:media_video"},
+	}
+	for _, tc := range []struct {
+		name      string
+		media     []any
+		legacy    bool
+		wantError string
+	}{
+		{name: "first and last frame", media: []any{map[string]any{"asset_id": "media_image", "role": "first_frame"}, map[string]any{"asset_id": "media_image", "role": "last_frame"}}},
+		{name: "image and video references", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_image"}, map[string]any{"asset_id": "media_video", "role": "reference_video"}}},
+		{name: "legacy text request"},
+		{name: "unknown asset", media: []any{map[string]any{"asset_id": "media_other", "role": "reference_image"}}, wantError: "Media asset is unavailable"},
+		{name: "wrong type", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_video"}}, wantError: "requires a video"},
+		{name: "unknown role", media: []any{map[string]any{"asset_id": "media_image", "role": "thumbnail"}}, wantError: "Unsupported media role"},
+		{name: "ambiguous legacy media", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_image"}}, legacy: true, wantError: "cannot be combined"},
+		{name: "invalid frame combination", media: []any{map[string]any{"asset_id": "media_image", "role": "first_frame"}, map[string]any{"asset_id": "media_video", "role": "reference_video"}}, wantError: "cannot be mixed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := map[string]any{"model": model, "prompt": "orbit the product", "duration": 6, "resolution": "720p", "seed": 0, "generate_audio": false, "watermark": false}
+			if tc.media != nil {
+				request["media"] = tc.media
+			}
+			if tc.legacy {
+				request["images"] = []string{"https://legacy.example/image.png"}
+			}
+			value, err := plugin.Engine.CallPath(t.Context(), "protocols", []string{"openai_video", "decodeRequest"}, map[string]any{
+				"model": model, "assets": assets, "body": map[string]any{"kind": "json", "value": request},
+			})
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				return
+			}
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var intent map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &intent))
+			body := intent["requestBody"].(map[string]any)
+			assert.NotContains(t, body, "media")
+			assert.Equal(t, float64(6), body["duration"])
+			assert.Equal(t, float64(0), body["seed"])
+			assert.Equal(t, false, body["generate_audio"])
+			assert.Equal(t, false, body["watermark"])
+			content := body["content"].([]any)
+			if tc.media != nil {
+				require.Len(t, content, 3)
+				for i, media := range tc.media {
+					entry := content[i+1].(map[string]any)
+					assert.Equal(t, media.(map[string]any)["role"], entry["role"])
+				}
+			} else {
+				require.Len(t, content, 1)
+			}
+			descriptor, err := plugin.Engine.Call(t.Context(), "buildSubmitRequest", map[string]any{"model": model, "upstreamModel": model, "requestBody": body, "baseUrl": "https://routek.ai", "apiKey": "test-key", "assets": assets})
+			require.NoError(t, err)
+			encoded, err = common.Marshal(descriptor)
+			require.NoError(t, err)
+			var submitted map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &submitted))
+			assert.Equal(t, body, submitted["body"], "the selected driver preserves the normalized request")
+		})
+	}
+}
+
+func TestRoutekSeedanceAcceptsUpstreamGatewayPollStatuses(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	const videoURL = "https://cdn.example/video.mp4?signature=abc%2Bdef"
+	for _, tc := range []struct {
+		name       string
+		status     string
+		id         string
+		wantStatus string
+		wantReason string
+	}{
+		{name: "observed processing response without id", status: "processing", wantStatus: "IN_PROGRESS"},
+		{name: "documented running response", status: "running", wantStatus: "IN_PROGRESS"},
+		{name: "gateway completed response", status: "completed", wantStatus: "SUCCESS"},
+		{name: "documented succeeded response", status: "succeeded", wantStatus: "SUCCESS"},
+		{name: "upstream failure", status: "failed", wantStatus: "FAILURE", wantReason: "provider rejected media"},
+		{name: "unknown status with output remains unknown", status: "future_status", wantStatus: "UNKNOWN", wantReason: "Unrecognized upstream status"},
+		{name: "missing status remains unknown", wantStatus: "UNKNOWN", wantReason: "Unrecognized upstream status"},
+		{name: "mismatched upstream id remains unknown", status: "completed", id: "other_task", wantStatus: "UNKNOWN", wantReason: "Upstream task id mismatch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{
+				"content": map[string]any{}, "duration": 6, "generate_audio": false,
+				"model": "doubao-seedance-2-0-fast-260128", "ratio": "16:9", "resolution": "720p", "updated_at": 1795191213,
+			}
+			if tc.status != "" {
+				body["status"] = tc.status
+			}
+			if tc.id != "" {
+				body["id"] = tc.id
+			}
+			if tc.wantStatus == "SUCCESS" || tc.status == "future_status" {
+				body["content"] = map[string]any{"video_url": videoURL}
+			}
+			if tc.status == "failed" {
+				body["error"] = map[string]any{"message": "provider rejected media"}
+			}
+			value, err := plugin.Engine.Call(t.Context(), "parseTaskResult", map[string]any{
+				"taskId": "upstream_task", "model": "doubao-seedance-2-0-fast", "upstreamModel": "doubao-seedance-2-0-fast-260128",
+			}, body, map[string]any{"status": 200})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var result map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &result))
+			assert.Equal(t, tc.wantStatus, result["status"])
+			if tc.wantReason != "" {
+				assert.Equal(t, tc.wantReason, result["reason"])
+			}
+			if tc.wantStatus == "SUCCESS" {
+				assert.Equal(t, videoURL, result["url"])
+				assert.Equal(t, "100%", result["progress"])
+			} else {
+				assert.NotContains(t, result, "url")
+				assert.NotContains(t, result, "progress")
+			}
+		})
+	}
+}
+
+func TestRoutekSeedancePublicResultsUsePlatformContentURL(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	for _, tc := range []struct {
+		upstreamStatus string
+		taskStatus     string
+	}{
+		{upstreamStatus: "processing", taskStatus: "IN_PROGRESS"},
+		{upstreamStatus: "completed", taskStatus: "SUCCESS"},
+		{upstreamStatus: "failed", taskStatus: "FAILURE"},
+	} {
+		t.Run(tc.upstreamStatus, func(t *testing.T) {
+			const privateID = "private_upstream_task"
+			const upstreamURL = "https://routek.ai/v1/videos/" + privateID + "/content?access=private-download-token"
+			data := map[string]any{
+				"id": privateID, "status": tc.upstreamStatus, "content": map[string]any{"video_url": upstreamURL},
+				"url": upstreamURL, "video_url": upstreamURL, "download_url": upstreamURL,
+				"artifacts": []any{map[string]any{"id": privateID, "url": upstreamURL}},
+				"model":     "doubao-seedance-2-0-fast-260128", "duration": 6, "generate_audio": false,
+				"ratio": "16:9", "resolution": "720p", "updated_at": 1795191213,
+				"usage": map[string]any{"completion_tokens": 1200, "total_tokens": 1200, "upstream_url": upstreamURL},
+				"error": map[string]any{"message": "Download " + upstreamURL + " for " + privateID},
+			}
+			task := map[string]any{"task_id": "task_public", "status": tc.taskStatus, "data": data}
+			for _, surface := range []struct {
+				root string
+				path []string
+			}{
+				{root: "native", path: []string{"taskStatus"}},
+				{root: "protocols", path: []string{"openai_video", "render"}},
+			} {
+				value, err := plugin.Engine.CallPath(t.Context(), surface.root, surface.path, map[string]any{}, task)
+				require.NoError(t, err)
+				encoded, err := common.Marshal(value)
+				require.NoError(t, err)
+				assert.NotContains(t, string(encoded), "routek.ai")
+				assert.NotContains(t, string(encoded), "private-download-token")
+				assert.NotContains(t, string(encoded), privateID)
+				var result map[string]any
+				require.NoError(t, common.Unmarshal(encoded, &result))
+				assert.Equal(t, "task_public", result["id"])
+				assert.Equal(t, tc.upstreamStatus, result["status"])
+				assert.Equal(t, float64(6), result["duration"])
+				assert.Equal(t, false, result["generate_audio"])
+				assert.Equal(t, "720p", result["resolution"])
+				assert.Equal(t, "16:9", result["ratio"])
+				assert.Equal(t, map[string]any{"completion_tokens": float64(1200), "total_tokens": float64(1200)}, result["usage"])
+				content := result["content"].(map[string]any)
+				if tc.taskStatus == "SUCCESS" {
+					assert.Equal(t, "/v1/videos/task_public/content", content["video_url"])
+				} else {
+					assert.Empty(t, content)
+				}
+				if tc.taskStatus == "FAILURE" {
+					assert.Equal(t, map[string]any{"code": "video_generation_failed", "message": "Video generation failed"}, result["error"])
+				} else {
+					assert.NotContains(t, result, "error")
+				}
+			}
+			require.Equal(t, upstreamURL, data["content"].(map[string]any)["video_url"], "presenters preserve the private snapshot for downloads")
+			value, err := plugin.Engine.Call(t.Context(), "buildContentRequest", map[string]any{
+				"artifactKey": "video", "upstreamTaskId": privateID, "data": data, "baseUrl": "https://routek.ai", "apiKey": "test-key",
+			})
+			require.NoError(t, err)
+			encoded, err := common.Marshal(value)
+			require.NoError(t, err)
+			var request map[string]any
+			require.NoError(t, common.Unmarshal(encoded, &request))
+			assert.Equal(t, "https://routek.ai/v1/videos/"+privateID+"/content", request["url"])
+			assert.Equal(t, "Bearer test-key", request["headers"].(map[string]any)["Authorization"])
+		})
 	}
 }

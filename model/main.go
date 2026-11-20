@@ -352,6 +352,8 @@ func migrateDB() error {
 		&TopUp{},
 		&QuotaData{},
 		&Task{},
+		&MediaAsset{},
+		&MediaAssetTask{},
 		&VideoWorkspaceCanvas{},
 		&VideoWorkspaceAsset{},
 		&VideoWorkspaceSubmission{},

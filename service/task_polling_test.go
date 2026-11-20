@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -1040,4 +1041,54 @@ func TestUpdateBatchTasksPollClassification(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMediaSourceEchoRedactionPreservesUsageAndResultURLs(t *testing.T) {
+	source := "https://platform.example/v1/media/assets/media_" + strings.Repeat("a", 32) + "/source?expires=123&signature=secret-capability"
+	var unicodeSource strings.Builder
+	for _, char := range source {
+		fmt.Fprintf(&unicodeSource, `\u%04x`, char)
+	}
+	for _, tc := range []struct {
+		name, body string
+		json       bool
+	}{
+		{name: "JSON Unicode URL", body: `{"error":"` + unicodeSource.String() + `"}`, json: true},
+		{name: "nested payload", body: `{"duration":6,"usage":{"total_tokens":123},"video_url":"https://cdn.example/result.mp4?signature=output-token","content":[{"image_url":{"url":"` + source + `"}}],"error":{"message":"Cannot fetch ` + source + `"}}`, json: true},
+		{name: "JSON escaped query", body: strings.ReplaceAll(`{"error":"`+source+`"}`, "&", `\u0026`), json: true},
+		{name: "JSON escaped slashes", body: strings.ReplaceAll(`{"error":"`+source+`"}`, "/", `\/`), json: true},
+		{name: "plain upstream error", body: "Cannot fetch " + source},
+		{name: "malformed JSON with escaped query", body: strings.ReplaceAll(`{"message":"`+source, "&", `\u0026`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			redacted := RedactMediaAssetCapabilities([]byte(tc.body))
+			assert.NotContains(t, string(redacted), "secret-capability")
+			assert.NotContains(t, string(redacted), "expires=123")
+			assert.Contains(t, string(redacted), "[media source redacted]")
+			if tc.json {
+				var value any
+				require.NoError(t, common.Unmarshal(redacted, &value))
+			}
+			if tc.name == "nested payload" {
+				var value map[string]any
+				require.NoError(t, common.Unmarshal(redacted, &value))
+				assert.Equal(t, float64(6), value["duration"])
+				assert.Equal(t, float64(123), value["usage"].(map[string]any)["total_tokens"])
+				assert.Equal(t, "https://cdn.example/result.mp4?signature=output-token", value["video_url"])
+			}
+		})
+	}
+	precise := []byte(`{"seed":9223372036854775806,"usage":{"count":9007199254740993,"fraction":0.123456789012345678901234567890},"input":"` + source + `"}`)
+	redacted := RedactMediaAssetCapabilities(precise)
+	var preciseFields map[string]common.RawMessage
+	require.NoError(t, common.Unmarshal(redacted, &preciseFields))
+	assert.Equal(t, "9223372036854775806", string(preciseFields["seed"]))
+	assert.Equal(t, `{"count":9007199254740993,"fraction":0.123456789012345678901234567890}`, string(preciseFields["usage"]))
+	assert.NotContains(t, string(redacted), "secret-capability")
+	taskError := TaskErrorWrapper(fmt.Errorf("Cannot fetch %s", source), "upstream_failed", http.StatusBadGateway)
+	assert.NotContains(t, taskError.Message, "secret-capability")
+	assert.NotContains(t, taskError.Error.Error(), "secret-capability")
+	assert.Contains(t, taskError.Message, "[media source redacted]")
+	ordinary := []byte(`{"url":"https://cdn.example/video.mp4?signature=output-token","usage":{"seconds":6}}`)
+	assert.Equal(t, ordinary, RedactMediaAssetCapabilities(ordinary))
 }

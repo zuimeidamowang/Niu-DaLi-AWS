@@ -114,28 +114,45 @@ func videoWorkspaceModels(c *gin.Context) ([]videoWorkspaceModel, error) {
 	type modelGroup struct{ model, group string }
 	seen := make(map[modelGroup]bool)
 	blocked := make(map[modelGroup]bool)
+	selectedPlugins := make(map[modelGroup]string)
 	for _, ability := range abilities {
 		route := modelGroup{ability.Model, ability.Group}
 		bindings := generation.LookupEndpointCandidates(http.MethodPost, "/v1/videos", ability.Model)
-		// Shared-model plugins can have incompatible parameter contracts. Until
-		// they expose a common UI schema, keep these out of this workspace.
-		if len(bindings) != 1 || bindings[0].Plugin == nil {
+		channel := channelByID[ability.ChannelId]
+		var plugin *jsplugin.LoadedPlugin
+		for _, binding := range bindings {
+			if binding.Plugin == nil {
+				continue
+			}
+			filters := []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/videos"}, {
+				Kind: dto.FilterTaskPluginIdentity, TaskPluginKey: binding.Plugin.Meta.Key, TaskPluginChannelTypes: binding.Plugin.Meta.ChannelTypes,
+			}}
+			if ok, _ := model.ChannelSatisfiesFilters(channel, ability.Model, filters); !ok {
+				continue
+			}
+			if plugin != nil && plugin.Meta.Key != binding.Plugin.Meta.Key {
+				blocked[route] = true
+				break
+			}
+			plugin = binding.Plugin
+		}
+		if plugin == nil || blocked[route] {
 			continue
 		}
-		plugin := bindings[0].Plugin
+		// A factory declaration alone does not make a model ambiguous. Only
+		// enabled channels in this billing group participate in distribution.
+		// Distinct active plugin contracts still need a shared UI schema.
+		if previous := selectedPlugins[route]; previous != "" && previous != plugin.Meta.Key {
+			blocked[route] = true
+			continue
+		}
+		selectedPlugins[route] = plugin.Meta.Key
 		if expression, configured := billing_setting.GetPluginBillingExpr(plugin.Meta.Key, ability.Model); configured {
 			schema, _ := plugin.Meta.UsageForModels(ability.Model)
 			if !billing_setting.TaskExprCompatible(expression, schema) {
 				continue
 			}
 		} else if !helper.HasModelBillingConfig(ability.Model) {
-			continue
-		}
-		filters := []dto.ChannelFilter{{Kind: dto.FilterRequestPath, RequestPath: "/v1/videos"}, {
-			Kind: dto.FilterTaskPluginIdentity, TaskPluginKey: plugin.Meta.Key, TaskPluginChannelTypes: plugin.Meta.ChannelTypes,
-		}}
-		channel := channelByID[ability.ChannelId]
-		if ok, _ := model.ChannelSatisfiesFilters(channel, ability.Model, filters); !ok {
 			continue
 		}
 		// Mapped models may require different parameters than their displayed

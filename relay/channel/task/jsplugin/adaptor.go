@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -247,11 +248,19 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 		return nil, err
 	}
 	if descriptor.BodyType == "multipart" {
-		form, parseErr := common.ParseMultipartFormReusable(c)
-		if parseErr != nil {
-			return nil, parseErr
+		var form *multipart.Form
+		for _, part := range descriptor.Parts {
+			if strings.HasPrefix(part.FileRef, "request_file:") {
+				form, err = common.ParseMultipartFormReusable(c)
+				if err != nil {
+					return nil, err
+				}
+				defer form.RemoveAll()
+				break
+			}
 		}
-		defer form.RemoveAll()
+		var total int64
+		limit := maxInlineFileBytes()
 		var body bytes.Buffer
 		writer := multipart.NewWriter(&body)
 		for _, part := range descriptor.Parts {
@@ -271,18 +280,17 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 				}
 				continue
 			}
-			field, index, validRef := pluginruntime.ParseFileReference(part.FileRef)
-			files := form.File[field]
-			if !validRef || index >= len(files) {
-				return nil, fmt.Errorf("unknown file reference %q", part.FileRef)
-			}
-			file, openErr := files[index].Open()
+			file, size, mimeType, originalFilename, openErr := openTaskFileReference(c, form, part.FileRef)
 			if openErr != nil {
 				return nil, openErr
 			}
+			if size > limit-total {
+				file.Close()
+				return nil, fmt.Errorf("multipart files exceed the %d byte limit", limit)
+			}
 			filename := part.Filename
 			if filename == "" {
-				filename = files[index].Filename
+				filename = originalFilename
 			}
 			header := make(textproto.MIMEHeader)
 			disposition := mime.FormatMediaType("form-data", map[string]string{"name": part.Name, "filename": filename})
@@ -291,14 +299,19 @@ func (a *TaskAdaptor) BuildRequestBody(c *gin.Context, info *relaycommon.RelayIn
 				return nil, fmt.Errorf("invalid multipart name or filename")
 			}
 			header.Set("Content-Disposition", disposition)
-			header.Set("Content-Type", files[index].Header.Get("Content-Type"))
+			header.Set("Content-Type", mimeType)
 			destination, copyErr := writer.CreatePart(header)
 			if copyErr == nil {
-				_, copyErr = io.Copy(destination, file)
+				var copied int64
+				copied, copyErr = io.Copy(destination, io.LimitReader(file, limit-total+1))
+				total += copied
 			}
 			file.Close()
 			if copyErr != nil {
 				return nil, copyErr
+			}
+			if total > limit {
+				return nil, fmt.Errorf("multipart files exceed the %d byte limit", limit)
 			}
 		}
 		if err = writer.Close(); err != nil {
@@ -335,7 +348,17 @@ func maxInlineFileBytes() int64 {
 func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
 	cloned := jsonValue(body)
 	var form *multipart.Form
-	if c != nil && c.Request != nil && strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data") {
+	multipartInput := false
+	if c != nil && c.Request != nil {
+		multipartInput = strings.Contains(c.GetHeader("Content-Type"), "multipart/form-data")
+		if prepared, exists := c.Get(pluginruntime.ContextKeyRouteRequest); exists {
+			if request, valid := prepared.(pluginruntime.RouteRequestContext); valid {
+				body, _ := request.Body.(map[string]any)
+				multipartInput = body["kind"] == "multipart"
+			}
+		}
+	}
+	if multipartInput {
 		parsed, parseErr := common.ParseMultipartFormReusable(c)
 		if parseErr != nil {
 			return nil, parseErr
@@ -345,17 +368,17 @@ func inlineJSONFilePlaceholders(c *gin.Context, body any) (any, error) {
 	}
 	limit := maxInlineFileBytes()
 	var total int64
-	return replaceJSONFilePlaceholders(cloned, form, limit, &total)
+	return replaceJSONFilePlaceholders(c, cloned, form, limit, &total)
 }
 
-func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, total *int64) (any, error) {
+func replaceJSONFilePlaceholders(c *gin.Context, value any, form *multipart.Form, limit int64, total *int64) (any, error) {
 	switch typed := value.(type) {
 	case map[string]any:
 		if _, isPlaceholder := typed["__fileRef"]; isPlaceholder {
-			return encodeFilePlaceholder(typed, form, limit, total)
+			return encodeFilePlaceholder(c, typed, form, limit, total)
 		}
 		for key, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(c, item, form, limit, total)
 			if err != nil {
 				return nil, err
 			}
@@ -364,7 +387,7 @@ func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, t
 		return typed, nil
 	case []any:
 		for index, item := range typed {
-			replaced, err := replaceJSONFilePlaceholders(item, form, limit, total)
+			replaced, err := replaceJSONFilePlaceholders(c, item, form, limit, total)
 			if err != nil {
 				return nil, err
 			}
@@ -376,7 +399,7 @@ func replaceJSONFilePlaceholders(value any, form *multipart.Form, limit int64, t
 	}
 }
 
-func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
+func encodeFilePlaceholder(c *gin.Context, placeholder map[string]any, form *multipart.Form, limit int64, total *int64) (string, error) {
 	for key := range placeholder {
 		switch key {
 		case "__fileRef", "encoding", "mimeType", "maxBytes":
@@ -392,31 +415,23 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 	if encoding != "base64" && encoding != "dataUrl" {
 		return "", fmt.Errorf("file placeholder encoding must be \"base64\" or \"dataUrl\"")
 	}
-	if form == nil {
-		return "", fmt.Errorf("unknown file reference %q", ref)
-	}
-	field, index, validRef := pluginruntime.ParseFileReference(ref)
-	files := form.File[field]
-	if !validRef || index >= len(files) {
-		return "", fmt.Errorf("unknown file reference %q", ref)
-	}
-	header := files[index]
 	maxBytes := limit
 	if raw, exists := placeholder["maxBytes"]; exists {
 		n, ok := usageNumber(raw, false)
 		if !ok || n <= 0 || n != math.Trunc(n) {
 			return "", fmt.Errorf("invalid file placeholder")
 		}
-		if int64(n) < maxBytes {
+		if n < float64(maxBytes) {
 			maxBytes = int64(n)
 		}
 	}
-	if header.Size > maxBytes {
-		return "", fmt.Errorf("file %q exceeds the %d byte limit", ref, maxBytes)
-	}
-	file, openErr := header.Open()
+	file, size, fileMIMEType, _, openErr := openTaskFileReference(c, form, ref)
 	if openErr != nil {
 		return "", openErr
+	}
+	if size > maxBytes {
+		file.Close()
+		return "", fmt.Errorf("file %q exceeds the %d byte limit", ref, maxBytes)
 	}
 	data, readErr := io.ReadAll(io.LimitReader(file, maxBytes+1))
 	file.Close()
@@ -437,10 +452,35 @@ func encodeFilePlaceholder(placeholder map[string]any, form *multipart.Form, lim
 	mimeType := "application/octet-stream"
 	if override, ok := placeholder["mimeType"].(string); ok && strings.TrimSpace(override) != "" {
 		mimeType = override
-	} else if contentType := header.Header.Get("Content-Type"); contentType != "" {
-		mimeType = contentType
+	} else if fileMIMEType != "" {
+		mimeType = fileMIMEType
 	}
 	return "data:" + mimeType + ";base64," + encoded, nil
+}
+
+// openTaskFileReference only permits stored assets resolved for this request;
+// the storage service repeats ownership and lifetime checks on every read.
+func openTaskFileReference(c *gin.Context, form *multipart.Form, ref string) (io.ReadCloser, int64, string, string, error) {
+	if id, stored := strings.CutPrefix(ref, "asset_file:"); stored {
+		if c == nil || c.Request == nil {
+			return nil, 0, "", "", errors.New("media asset request context is unavailable")
+		}
+		prepared, _ := c.Get(pluginruntime.ContextKeyRouteRequest)
+		request, _ := prepared.(pluginruntime.RouteRequestContext)
+		asset, _ := request.Assets[id].(map[string]any)
+		if asset["fileRef"] != ref {
+			return nil, 0, "", "", errors.New("unknown media asset file reference")
+		}
+		file, size, mimeType, err := service.OpenMediaAsset(context.WithoutCancel(c.Request.Context()), common.GetContextKeyInt(c, constant.ContextKeyUserId), id)
+		return file, size, mimeType, id, err
+	}
+	field, index, valid := pluginruntime.ParseFileReference(ref)
+	if !valid || form == nil || index >= len(form.File[field]) {
+		return nil, 0, "", "", fmt.Errorf("unknown file reference %q", ref)
+	}
+	header := form.File[field][index]
+	file, err := header.Open()
+	return file, header.Size, header.Header.Get("Content-Type"), header.Filename, err
 }
 
 func (a *TaskAdaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, body io.Reader) (*http.Response, error) {
@@ -486,6 +526,7 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		if err == nil && len(body) > maxTaskPluginPersistedJSONBytes {
 			err = fmt.Errorf("task submit response exceeds size limit")
 		}
+		body = service.RedactMediaAssetCapabilities(body)
 		responseBody = string(body)
 		var decoded any
 		if err == nil && common.Unmarshal(body, &decoded) == nil {
@@ -496,6 +537,15 @@ func (a *TaskAdaptor) ParseResponse(c *gin.Context, resp *http.Response, info *r
 		failure := service.TaskErrorWrapper(err, "read_response_body_failed", http.StatusBadGateway)
 		failure.NoRetry = streaming
 		return nil, failure
+	}
+	if streaming && len(c.GetStringSlice(pluginruntime.ContextKeyMediaAssetIDs)) > 0 {
+		encoded, encodeErr := common.Marshal(responseBody)
+		if encodeErr != nil {
+			return nil, service.TaskErrorWrapper(encodeErr, "plugin_submit_response_invalid", http.StatusBadGateway)
+		}
+		if decodeErr := common.Unmarshal(service.RedactMediaAssetCapabilities(encoded), &responseBody); decodeErr != nil {
+			return nil, service.TaskErrorWrapper(decodeErr, "plugin_submit_response_invalid", http.StatusBadGateway)
+		}
 	}
 	headers := make(map[string][]string, len(resp.Header))
 	maps.Copy(headers, resp.Header)

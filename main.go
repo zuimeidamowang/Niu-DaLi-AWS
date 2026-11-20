@@ -376,6 +376,13 @@ func InitResources() error {
 	}
 
 	service.StartAuthArtifactCleanup()
+	if err := service.InitMediaAssets(context.Background()); err != nil {
+		// Storage configuration and SDK errors may contain private endpoints or
+		// credentials. Fail closed without copying those values into logs.
+		common.SysError("media asset storage unavailable; check private startup configuration")
+	} else {
+		service.StartMediaAssetCleanup(context.Background())
+	}
 
 	return nil
 }

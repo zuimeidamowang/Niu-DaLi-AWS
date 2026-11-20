@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
@@ -19,6 +21,8 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	builtinplugins "github.com/QuantumNous/new-api/plugins"
+	taskplugin "github.com/QuantumNous/new-api/relay/channel/task/jsplugin"
+	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/gin-gonic/gin"
 	"github.com/glebarez/sqlite"
@@ -1819,6 +1823,149 @@ func TestPrepareTaskPluginEndpointFiltersEachSharedCandidate(t *testing.T) {
 			} else {
 				assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
 				assert.Equal(t, tc.wantKeys, gotKeys)
+			}
+		})
+	}
+}
+
+func TestTaskPluginPlatformMediaContract(t *testing.T) {
+	setupTaskPluginRouteDB(t)
+	require.NoError(t, model.DB.AutoMigrate(&model.MediaAsset{}, &model.MediaAssetTask{}))
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodGet, r.Method)
+		assert.Equal(t, "/media-test/object", r.URL.Path)
+		w.Header().Set("Content-Type", "image/png")
+		_, err := io.WriteString(w, "image-bytes")
+		assert.NoError(t, err)
+	}))
+	t.Cleanup(source.Close)
+	// Restore the process service only after t.Setenv has restored its inputs.
+	t.Cleanup(func() { require.NoError(t, service.InitMediaAssets(context.Background())) })
+	for name, value := range map[string]string{
+		"MEDIA_ASSET_ENABLED": "true", "MEDIA_ASSET_S3_BUCKET": "media-test", "MEDIA_ASSET_S3_REGION": "us-east-1",
+		"MEDIA_ASSET_S3_ENDPOINT": source.URL, "MEDIA_ASSET_PUBLIC_BASE_URL": "https://platform.example", "MEDIA_ASSET_SIGNING_KEY": strings.Repeat("k", 32),
+		"AWS_ACCESS_KEY_ID": "test-access-key", "AWS_SECRET_ACCESS_KEY": "test-secret-key", "AWS_EC2_METADATA_DISABLED": "true",
+	} {
+		t.Setenv(name, value)
+	}
+	require.NoError(t, service.InitMediaAssets(t.Context()))
+	id := "media_" + strings.Repeat("a", 32)
+	require.NoError(t, model.DB.Create(&model.MediaAsset{ID: id, UserID: 41, ObjectKey: "object", Type: "image", MIMEType: "image/png", Size: 11, State: model.MediaAssetReady, CreatedAt: time.Now().Unix(), ExpiresAt: time.Now().Unix() + 86400}).Error)
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	for _, tc := range []struct {
+		name, path, media, wantError string
+		user                         int
+	}{
+		{name: "protocol image input", path: "/v1/videos", user: 41, media: `[{"asset_id":"` + id + `","role":"first_frame"}]`},
+		{name: "native image input", path: "/routek/api/v3/contents/generations/tasks", user: 41, media: `[{"asset_id":"` + id + `","role":"first_frame"}]`},
+		{name: "owner isolation", path: "/v1/videos", user: 42, media: `[{"asset_id":"` + id + `","role":"first_frame"}]`, wantError: "unavailable or not owned"},
+		{name: "inferred media type", path: "/v1/videos", user: 41, media: `[{"asset_id":"` + id + `","role":"reference_video"}]`, wantError: "does not match"},
+		{name: "reject caller type", path: "/v1/videos", user: 41, media: `[{"asset_id":"` + id + `","role":"first_frame","type":"image"}]`, wantError: "only asset_id and role"},
+		{name: "reject URL substitution", path: "/v1/videos", user: 41, media: `[{"url":"https://other.example/image.png","role":"first_frame"}]`, wantError: "requires asset_id and role"},
+		{name: "reject null", path: "/v1/videos", user: 41, media: `null`, wantError: "between 1 and 32"},
+		{name: "reject unknown role", path: "/v1/videos", user: 41, media: `[{"asset_id":"` + id + `","role":"thumbnail"}]`, wantError: "unsupported media role"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			router := gin.New()
+			router.Use(func(c *gin.Context) { common.SetContextKey(c, constant.ContextKeyUserId, tc.user); c.Next() })
+			prepared := func(c *gin.Context) {
+				request := c.MustGet(jsplugin.ContextKeyRouteRequest).(jsplugin.RouteRequestContext)
+				assert.Equal(t, []string{id}, c.MustGet(jsplugin.ContextKeyMediaAssetIDs))
+				asset := request.Assets[id].(map[string]any)
+				assert.Equal(t, "image", asset["type"])
+				assert.Equal(t, "asset_file:"+id, asset["fileRef"])
+				assert.Contains(t, asset["url"], "https://platform.example/v1/media/assets/"+id+"/source?")
+				storage, err := common.GetBodyStorage(c)
+				require.NoError(t, err)
+				raw, err := storage.Bytes()
+				require.NoError(t, err)
+				assert.NotContains(t, string(raw), "signature", "the retained public request contains only asset IDs")
+				c.Status(http.StatusNoContent)
+			}
+			if tc.path == "/v1/videos" {
+				router.POST(tc.path, PinTaskPluginEndpoint(), PrepareTaskPluginEndpoint(), prepared)
+			} else {
+				router.POST(tc.path, pinTaskPluginRoute(plugin, 0), PrepareTaskPluginRoute(), prepared)
+			}
+			request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{"model":"doubao-seedance-2-5","prompt":"a cat","duration":6,"media":`+tc.media+`}`))
+			request.Header.Set("Content-Type", "application/json")
+			recorder := httptest.NewRecorder()
+			router.ServeHTTP(recorder, request)
+			if tc.wantError != "" {
+				assert.Equal(t, http.StatusBadRequest, recorder.Code)
+				assert.Contains(t, recorder.Body.String(), tc.wantError)
+			} else {
+				assert.Equal(t, http.StatusNoContent, recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+
+	t.Run("legacy channel rejects media explicitly", func(t *testing.T) {
+		source, err := builtinplugins.Source("routek-seedance")
+		require.NoError(t, err)
+		legacy, err := jsplugin.CompilePlugin(strings.Replace(source, `requiredCapabilities: ["media-assets@1"],`, "", 1), jsplugin.Options{})
+		require.NoError(t, err)
+		router := gin.New()
+		router.POST("/routek/api/v3/contents/generations/tasks", func(c *gin.Context) { common.SetContextKey(c, constant.ContextKeyUserId, 41); c.Next() }, pinTaskPluginRoute(legacy, 0), PrepareTaskPluginRoute(), func(c *gin.Context) { t.Error("unsupported channel reached submission") })
+		request := httptest.NewRequest(http.MethodPost, "/routek/api/v3/contents/generations/tasks", strings.NewReader(`{"model":"doubao-seedance-2-5","media":[{"asset_id":"`+id+`","role":"first_frame"}]}`))
+		request.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, request)
+		assert.Equal(t, http.StatusBadRequest, recorder.Code)
+		assert.Contains(t, recorder.Body.String(), "does not support media assets")
+	})
+
+	// Stored file refs also support future plugins that require bytes rather
+	// than a URL. They can only open assets resolved for this exact request.
+	for _, mode := range []string{"base64", "multipart", "outside-request", "owner-rechecked"} {
+		t.Run(mode, func(t *testing.T) {
+			body := `{body:{image:{__fileRef:ctx.assets["` + id + `"].fileRef,encoding:"dataUrl"}}}`
+			if mode == "multipart" {
+				body = `{bodyType:"multipart",parts:[{name:"image",fileRef:ctx.assets["` + id + `"].fileRef,filename:"image.png"}]}`
+			}
+			if mode == "outside-request" {
+				body = `{body:{image:{__fileRef:"asset_file:media_unrequested",encoding:"dataUrl"}}}`
+			}
+			bytePlugin, err := jsplugin.CompilePlugin(`export const meta={apiVersion:1,key:"asset-bytes-test",name:"Asset bytes",version:"1.0.0",author:{name:"Test"},models:["m"],fetchMode:"per_task",requiredCapabilities:["media-assets@1"]}; export function buildSubmitRequest(ctx){return {url:"https://vendor.example/submit",...`+body+`};} export function parseSubmitResponse(){return {taskId:"one"};} export function buildQueryRequest(){return {url:"https://vendor.example/query"};} export function parseTaskResult(){return {status:"SUCCESS"};}`, jsplugin.Options{})
+			require.NoError(t, err)
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{}`))
+			c.Request.Header.Set("Content-Type", "application/json")
+			common.SetContextKey(c, constant.ContextKeyUserId, 41)
+			request := jsplugin.RouteRequestContext{Body: map[string]any{"kind": "json", "value": map[string]any{"media": []any{map[string]any{"asset_id": id, "role": "first_frame"}}}}}
+			require.NoError(t, resolveTaskPluginMedia(c, &request))
+			c.Set(jsplugin.ContextKeyRouteRequest, request)
+			if mode == "owner-rechecked" {
+				common.SetContextKey(c, constant.ContextKeyUserId, 42)
+			}
+			adaptor := taskplugin.New(bytePlugin)
+			info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://vendor.example"}, TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+			adaptor.Init(info)
+			output, err := adaptor.BuildRequestBody(c, info)
+			if mode == "owner-rechecked" {
+				require.ErrorIs(t, err, model.ErrMediaAssetNotFound)
+				return
+			}
+			if mode == "outside-request" {
+				require.ErrorContains(t, err, "unknown media asset file reference")
+				return
+			}
+			require.NoError(t, err)
+			encoded, err := io.ReadAll(output)
+			require.NoError(t, err)
+			if mode == "base64" {
+				assert.JSONEq(t, `{"image":"data:image/png;base64,aW1hZ2UtYnl0ZXM="}`, string(encoded))
+			} else {
+				_, parameters, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
+				require.NoError(t, err)
+				part, err := multipart.NewReader(bytes.NewReader(encoded), parameters["boundary"]).NextPart()
+				require.NoError(t, err)
+				assert.Equal(t, "image", part.FormName())
+				assert.Equal(t, "image.png", part.FileName())
+				data, err := io.ReadAll(part)
+				require.NoError(t, err)
+				assert.Equal(t, "image-bytes", string(data))
 			}
 		})
 	}

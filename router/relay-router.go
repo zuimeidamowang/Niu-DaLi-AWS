@@ -17,6 +17,14 @@ func SetRelayRouter(router *gin.Engine) {
 	router.Use(middleware.DecompressRequestMiddleware())
 	router.Use(middleware.BodyStorageCleanup()) // 清理请求体存储
 	router.Use(middleware.StatsMiddleware())
+	mediaSourceRouter := router.Group("/v1/media/assets")
+	mediaSourceRouter.Use(middleware.RouteTag("relay"))
+	mediaSourceRouter.GET("/:asset_id/source", controller.MediaAssetSource)
+	mediaSourceRouter.HEAD("/:asset_id/source", controller.MediaAssetSource)
+	// Explicit trailing-slash routes avoid Gin's debug redirect logger, which
+	// prints a Location URL before application query redaction can run.
+	mediaSourceRouter.GET("/:asset_id/source/", controller.MediaAssetSource)
+	mediaSourceRouter.HEAD("/:asset_id/source/", controller.MediaAssetSource)
 	// https://platform.openai.com/docs/api-reference/introduction
 	modelsRouter := router.Group("/v1/models")
 	modelsRouter.Use(middleware.RouteTag("relay"))
@@ -78,6 +86,10 @@ func SetRelayRouter(router *gin.Engine) {
 		relayV1Router.GET("/responses", controller.ResponsesWebSocket)
 	}
 	relayV1Router.Use(middleware.ModelRequestRateLimit())
+	relayV1Router.POST("/media/assets", controller.UploadMediaAsset)
+	relayV1Router.GET("/media/assets/:asset_id", controller.RetrieveMediaAsset)
+	relayV1Router.GET("/media/assets/:asset_id/content", controller.MediaAssetContent)
+	relayV1Router.HEAD("/media/assets/:asset_id/content", controller.MediaAssetContent)
 	relayV1Router.POST("/media/uploads", controller.PrepareSeedanceMediaUpload, middleware.Distribute(), controller.SeedanceMediaUpload)
 
 	{
