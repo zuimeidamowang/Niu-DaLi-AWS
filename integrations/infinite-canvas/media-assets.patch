@@ -802,3 +802,38 @@ index 0000000..d59a58c
 +    expect(i18n.t("videoWorkbench.taskStillPending", { lng: "zh-CN" })).toContain("原任务");
 +    expect(i18n.t("videoWorkbench.taskStillPending", { lng: "en-US" })).toContain("existing task");
 +});
+--- a/web/src/lib/seedance-capabilities.ts
++++ b/web/src/lib/seedance-capabilities.ts
+@@ -33,7 +33,7 @@
+ export const seedanceDefaultPrompt = "保持参考素材中的主体外观和风格，生成自然连贯的动作与镜头";
+ 
+ 
+-export type VideoAdapter = "88api" | "standard";
++export type VideoAdapter = "media_assets" | "88api" | "standard";
+ 
+ export function isDirect88Api(baseUrl: string): boolean {
+     try {
+@@ -58,6 +58,6 @@
+ export function usesSeedanceAdapter(config: { baseUrl: string; videoAdapter?: VideoAdapter }): boolean {
+     if (isDirect88Api(config.baseUrl)) return true;
+     // "通用 OpenAI 视频" stays an explicit opt-out even on the gateway address.
+-    if (config.videoAdapter === "standard") return false;
++    if (config.videoAdapter === "standard" || config.videoAdapter === "media_assets") return false;
+     return config.videoAdapter === "88api" || isDlnGateway(config.baseUrl);
+ }
+--- a/web/src/lib/video-capabilities.ts
++++ b/web/src/lib/video-capabilities.ts
+@@ -1,4 +1,5 @@
+ import { getSeedanceCapabilities, usesSeedanceAdapter, type VideoAdapter } from "./seedance-capabilities";
++import { getMediaAssetsVideoCapabilities, usesMediaAssetsAdapter } from "./media-assets";
+ import i18n from "@/i18n";
+ import { computeVideoSize, inferVideoRatio, parseVideoResolution } from "@/lib/media-size";
+ import { modelOptionName, resolveModelRequestConfig, resolveModelScript, type AiConfig } from "@/stores/use-config-store";
+@@ -13,6 +14,7 @@
+ };
+ 
+ export function getNiuVideoCapabilities(baseUrl: string, model: string, videoAdapter?: VideoAdapter) {
++    if (usesMediaAssetsAdapter({ baseUrl, videoAdapter }, modelOptionName(model))) return getMediaAssetsVideoCapabilities(modelOptionName(model));
+     const seedance = usesSeedanceAdapter({baseUrl, videoAdapter}) ? getSeedanceCapabilities(modelOptionName(model)) : undefined;
+     if (seedance) return seedance;
+     try {
