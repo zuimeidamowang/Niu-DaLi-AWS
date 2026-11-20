@@ -107,6 +107,14 @@ export function Hero(props: HeroProps) {
             >
               {t('View Pricing')}
             </Button>
+            <Button
+              size='lg'
+              variant='ghost'
+              className='h-11 px-5'
+              render={<Link to='/docs' />}
+            >
+              {t('API documentation')}
+            </Button>
           </div>
 
           <div className='niu-dali-hero-muted mt-8 flex flex-wrap gap-x-5 gap-y-3 text-xs'>

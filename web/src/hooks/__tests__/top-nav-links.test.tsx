@@ -122,14 +122,29 @@ describe('external canvas top navigation', () => {
   )
 })
 
-describe('retired documentation and about navigation', () => {
-  it('hides both entries even when an existing server configuration enables them', () => {
+describe('public API documentation navigation', () => {
+  it('exposes the local documentation to guests instead of a configured external documentation URL', () => {
     const { result } = topNavFor(undefined, {
       HeaderNavModules: { docs: true, about: true },
       docs_link: 'https://docs.example.test',
     })
 
-    expect(result.current.some((link) => link.title === 'Docs')).toBe(false)
+    expect(
+      result.current.find((link) => link.title === 'API documentation')
+    ).toEqual({
+      title: 'API documentation',
+      href: '/docs',
+    })
     expect(result.current.some((link) => link.title === 'About')).toBe(false)
+  })
+
+  it('keeps the public documentation discoverable when legacy navigation settings hide docs', () => {
+    const { result } = topNavFor(undefined, {
+      HeaderNavModules: { docs: false },
+    })
+
+    expect(
+      result.current.find((link) => link.href === '/docs')?.requiresAuth
+    ).toBeUndefined()
   })
 })

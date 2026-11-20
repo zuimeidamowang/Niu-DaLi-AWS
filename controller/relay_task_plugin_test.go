@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -1138,7 +1139,10 @@ func TestVideoWorkspaceDoubaoCatalogRequiresTextInputSupport(t *testing.T) {
 	names := append(append([]string{}, supported...), "doubao-seedance-1-0-lite-i2v")
 	modes, expressions := map[string]string{}, map[string]string{}
 	for _, name := range names {
-		require.Len(t, pluginruntime.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, "/v1/videos", name), 1)
+		bindings := pluginruntime.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, "/v1/videos", name)
+		require.True(t, slices.ContainsFunc(bindings, func(binding pluginruntime.ProtocolBinding) bool {
+			return binding.Plugin != nil && binding.Plugin.Meta.Key == "doubao"
+		}))
 		modes[name], expressions[name] = "tiered_expr", `tier("video", u("tokens") * 0.01)`
 	}
 	withTieredBillingConfig(t, modes, expressions)
@@ -1173,6 +1177,25 @@ func TestVideoWorkspaceDoubaoCatalogRequiresTextInputSupport(t *testing.T) {
 		assert.Empty(t, item.DefaultResolution, "preserve provider default when its request omits a resolution")
 	}
 	assert.ElementsMatch(t, supported, actual, "the image-only model must not be offered without an image input")
+
+	// Only enabled channels make shared model contracts ambiguous. Installing
+	// another factory must not hide the original provider's configured model.
+	sharedModel := "doubao-seedance-2-5-260628"
+	routekSettings := `{"task_plugin_key":"routek-seedance"}`
+	routek := model.Channel{Name: "other-seedance-provider", Type: constant.ChannelTypeTaskPlugin, Status: common.ChannelStatusEnabled, Group: "default", Models: sharedModel, Setting: &routekSettings}
+	require.NoError(t, db.Create(&routek).Error)
+	require.NoError(t, db.Create(&model.Ability{Group: "default", Model: sharedModel, ChannelId: routek.Id, Enabled: true}).Error)
+	response = httptest.NewRecorder()
+	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/video-workspace/models", nil))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+	assert.False(t, slices.ContainsFunc(catalog.Data.Models, func(item videoWorkspaceModel) bool { return item.ID == sharedModel }), "different enabled provider contracts require an explicit common schema")
+	require.NoError(t, db.Model(&routek).Update("status", common.ChannelStatusManuallyDisabled).Error)
+	response = httptest.NewRecorder()
+	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/video-workspace/models", nil))
+	require.Equal(t, http.StatusOK, response.Code)
+	require.NoError(t, common.Unmarshal(response.Body.Bytes(), &catalog))
+	assert.True(t, slices.ContainsFunc(catalog.Data.Models, func(item videoWorkspaceModel) bool { return item.ID == sharedModel }), "disabled providers must not hide the active channel")
 }
 
 func TestVideoWorkspaceMengwuxianCatalog(t *testing.T) {
@@ -1299,8 +1322,19 @@ func TestVideoWorkspaceResolutionForwarding(t *testing.T) {
 		fields := c.Request.MultipartForm.Value
 		name := fields["model"][0]
 		bindings := pluginruntime.DefaultRegistry.Generation().LookupEndpointCandidates(http.MethodPost, "/v1/videos", name)
-		require.Len(t, bindings, 1)
-		plugin := bindings[0].Plugin
+		var plugin *pluginruntime.LoadedPlugin
+		for _, binding := range bindings {
+			if binding.Plugin == nil {
+				continue
+			}
+			var channel model.Channel
+			settings := `"task_plugin_key":"` + binding.Plugin.Meta.Key + `"`
+			if db.Where("models = ? AND setting LIKE ?", name, "%"+settings+"%").First(&channel).Error == nil {
+				plugin = binding.Plugin
+				break
+			}
+		}
+		require.NotNil(t, plugin, "decode through the configured channel's plugin")
 		decodeContext := map[string]any{"model": name, "body": map[string]any{"kind": "multipart", "fields": fields}}
 		decoded, err := plugin.Engine.CallPath(c.Request.Context(), "protocols", []string{"openai_video", "decodeRequest"}, decodeContext)
 		require.NoError(t, err)

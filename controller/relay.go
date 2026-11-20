@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -482,6 +483,11 @@ func executeTaskSubmissionWith(
 	durable := false
 	stage := "start"
 	defer func() {
+		if !durable && relayInfo.TaskRelayInfo != nil && relayInfo.TaskRelayInfo.PublicTaskID != "" {
+			if err := service.CancelMediaAssetTask(context.WithoutCancel(c.Request.Context()), relayInfo.TaskRelayInfo.PublicTaskID); err != nil {
+				logger.LogWarn(c, "media asset submission lease release failed")
+			}
+		}
 		if !durable && relayInfo.Billing != nil {
 			diagnostics.refund(stage)
 			relayInfo.Billing.Refund(c)

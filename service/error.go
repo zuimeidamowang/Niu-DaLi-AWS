@@ -199,6 +199,10 @@ func TaskErrorWrapperLocal(err error, code string, statusCode int) *taskdto.Task
 
 func TaskErrorWrapper(err error, code string, statusCode int) *taskdto.TaskError {
 	text := err.Error()
+	if safe := string(RedactMediaAssetCapabilities([]byte(text))); safe != text {
+		text = safe
+		err = errors.New(safe)
+	}
 	lowerText := strings.ToLower(text)
 	if strings.Contains(lowerText, "post") || strings.Contains(lowerText, "dial") || strings.Contains(lowerText, "http") {
 		common.SysLog(fmt.Sprintf("error: %s", text))

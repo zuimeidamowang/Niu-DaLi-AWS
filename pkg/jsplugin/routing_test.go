@@ -496,6 +496,18 @@ func TestRouteRequestContextClonesFormAndMultipartValuesPerDecoder(t *testing.T)
 	}
 }
 
+func TestRouteRequestContextClonesResolvedMediaPerDecoder(t *testing.T) {
+	request := RouteRequestContext{Assets: map[string]any{"media_one": map[string]any{"type": "image", "url": "https://platform.example/source"}}}
+	first := request.JSValue()
+	first["assets"].(map[string]any)["media_one"].(map[string]any)["url"] = "https://mutated.example"
+	second := request.JSValue()
+	assert.Equal(t, "https://platform.example/source", second["assets"].(map[string]any)["media_one"].(map[string]any)["url"])
+	_, present := (RouteRequestContext{}).JSValue()["assets"]
+	assert.False(t, present, "legacy requests have no synthetic assets field")
+	assert.True(t, HasCapability(CapabilityMediaAssets))
+	assert.False(t, HasCapability("media-assets@2"))
+}
+
 func TestRegistryNoOpMutationsKeepCurrentGeneration(t *testing.T) {
 	registry := NewRegistry()
 	plugin := mustCompileRoutingPlugin(t, "stable-generation", 0, `["model"]`, "", "")

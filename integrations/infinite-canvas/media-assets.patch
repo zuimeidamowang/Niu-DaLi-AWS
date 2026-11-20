@@ -1,0 +1,804 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index c30b7a8..d15eed8 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,10 @@
+ 
+ ## Unreleased
+ 
+++ [修复] 本站视频任务等待或下载中断后保留原任务，支持继续查询，避免重试重复生成。
++
+++ [新增] 本站统一素材接口支持本地图片和视频上传后用素材 ID 生成，画布与 API 共用格式，渠道可选择通用素材接入。
++
+ + [调整] 渠道的「视频接入方式」网关选项更名为「DLN网关」，DLN 网关地址默认使用内置多素材接入，仍可手动切回通用 OpenAI 视频。
+ 
+ + [修复] 直连 88API 官方地址自动启用多素材 URL 提交，保留多图顺序和用户提示词，避免落入通用单文件上传。
+diff --git a/docs/content/docs/progress/pending-test.mdx b/docs/content/docs/progress/pending-test.mdx
+index 0fa44ac..cf40be8 100644
+--- a/docs/content/docs/progress/pending-test.mdx
++++ b/docs/content/docs/progress/pending-test.mdx
+@@ -5,6 +5,14 @@ description: Implemented changes that still need manual verification
+ 
+ # Pending Tests
+ 
++## 本站统一素材接入
++
++- 图片及视频先上传本站 `/v1/media/assets`，然后用 `media[].asset_id` 与用途提交 `/v1/videos`；本地工作台和画布节点共用接口。
++- 本站发布的 Routek Seedance 模型自动识别，其他支持该契约的模型可在渠道选择「本站素材上传」，自定义脚本仍优先；原有 88API 和通用协议继续可用。
++- 待真实环境验收：多图顺序、首尾帧、参考视频，上传失败与取消、任务刷新续查、视频播放与下载、跨账号隔离及任务结束后 24 小时清理。工作台日志中的本地视频参考应可恢复。
++- 工作台已提交的本站任务超过一轮等待或查询、下载暂时出错时保持待处理，继续查询原任务；刷新后自动续查，不再次上传或生成。模型明确失败才允许重新生成。
++- 画布项目及原始本地素材仍保存在浏览器，不表示整份画布已云同步。服务端上传默认图片 50 MiB、视频 500 MiB、每账号 5 GiB，具体以管理员配置和模型限制为准。
++
+ ## 88API Seedance 多素材接入
+ 
+ - 直连 `https://api.88api.ai`（或 `/v1`）自动启用内置多素材请求；不依赖网关接入开关。每张参考图先申请上传、完成 PUT，最终生成只发送有序 `images` URL 数组和原始提示词，不设置首尾帧。直连上传凭证请求省略网关专属 `model` 字段。当前真实上游生成仍待验收。
+diff --git a/web/src/components/canvas/canvas-node-prompt-panel.tsx b/web/src/components/canvas/canvas-node-prompt-panel.tsx
+index 08a38cf..1c2e699 100644
+--- a/web/src/components/canvas/canvas-node-prompt-panel.tsx
++++ b/web/src/components/canvas/canvas-node-prompt-panel.tsx
+@@ -1,4 +1,5 @@
+ import { getSeedanceCapabilities, usesSeedanceAdapter } from "@/lib/seedance-capabilities";
++import { usesMediaAssetsAdapter } from "@/lib/media-assets";
+ import { useEffect, useState } from "react";
+ import { ArrowUp, LoaderCircle, Maximize2, Square } from "lucide-react";
+ import { Button, Modal, Tooltip } from "antd";
+@@ -62,7 +63,8 @@ export function CanvasNodePromptPanel({ node, nodes, isRunning, onPromptChange,
+     };
+ 
+     const hasSeedanceMedia = mode === "video" && usesSeedanceAdapter(resolveModelRequestConfig(config, config.model)) && Boolean(getSeedanceCapabilities(modelOptionName(config.model || config.videoModel))) && connectedNodes.some(item => [CanvasNodeType.Image, CanvasNodeType.Video, CanvasNodeType.Audio].some(type => type === item.type) && Boolean(item.metadata?.content));
+-    const canSubmit = Boolean(prompt.trim()) || hasSeedanceMedia;
++    const hasUploadedMedia = mode === "video" && usesMediaAssetsAdapter(resolveModelRequestConfig(config, config.model), modelOptionName(config.model || config.videoModel)) && connectedNodes.some(item => [CanvasNodeType.Image, CanvasNodeType.Video].some(type => type === item.type) && Boolean(item.metadata?.content));
++    const canSubmit = Boolean(prompt.trim()) || hasSeedanceMedia || hasUploadedMedia;
+     const submit = () => {
+         const text = prompt.trim();
+         if (!canSubmit || isRunning) return;
+diff --git a/web/src/components/layout/channel-editor-drawer.tsx b/web/src/components/layout/channel-editor-drawer.tsx
+index f09021c..313ec1c 100644
+--- a/web/src/components/layout/channel-editor-drawer.tsx
++++ b/web/src/components/layout/channel-editor-drawer.tsx
+@@ -1,4 +1,4 @@
+-import { isDirect88Api, usesSeedanceAdapter } from "@/lib/seedance-capabilities";
++import { isDirect88Api, usesSeedanceAdapter, type VideoAdapter } from "@/lib/seedance-capabilities";
+ import { Button, Drawer, Input, Segmented, Select, Space } from "antd";
+ import { ListPlus, Trash2 } from "lucide-react";
+ import { useEffect, useState } from "react";
+@@ -80,8 +80,14 @@ export function ChannelEditorDrawer({ open, channel, onSave, onClose }: { open:
+                 </label>
+                 {draft.apiFormat === "openai" ? <label className="block md:col-span-2">
+                     <span className="mb-1 block text-sm font-medium">视频接入方式</span>
+-                    <Select aria-label="视频接入方式" className="w-full" value={isDirect88Api(draft.baseUrl) ? "direct88api" : usesSeedanceAdapter(draft) ? "88api" : "standard"} options={[...(isDirect88Api(draft.baseUrl) ? [{label:"88API 直连（自动多素材上传）",value:"direct88api"}] : []), {label:"DLN网关",value:"88api"},{label:"通用 OpenAI 视频",value:"standard"}]} onChange={value => patch({videoAdapter:value === "88api" ? "88api" : "standard"})} />
+-                    {isDirect88Api(draft.baseUrl) ? <span className="mt-1 block text-xs">已识别 88API 官方地址：多张参考图会分别上传，再与提示词一起提交。保持全能参考模式即可，无需更换地址或 Key。</span> : usesSeedanceAdapter(draft) ? <span className="mt-1 block text-xs">已识别 DLN 网关地址：默认按内置多素材接入提交，无需额外设置。支持无提示词素材生成、多图、首尾帧及参考音视频；分辨率按模型开放，已有自定义脚本仍优先。改用「通用 OpenAI 视频」可回到通用请求。</span> : draft.videoAdapter === "88api" ? <span className="mt-1 block text-xs">填写已升级的 DLN 网关地址和用户网关 Key。支持无提示词素材生成、多图、首尾帧及参考音视频；分辨率按模型开放，已有自定义脚本仍优先。</span> : null}
++                    <Select aria-label="视频接入方式" className="w-full" value={isDirect88Api(draft.baseUrl) ? "direct88api" : draft.videoAdapter || "auto"} options={[
++                        ...(isDirect88Api(draft.baseUrl) ? [{ label: "88API 直连（自动多素材上传）", value: "direct88api" }] : []),
++                        { label: "自动识别", value: "auto" },
++                        { label: "本站素材上传（统一图片 / 视频格式）", value: "media_assets" },
++                        { label: "88API 多素材上传", value: "88api" },
++                        { label: "通用 OpenAI 视频", value: "standard" },
++                    ]} onChange={value => patch({ videoAdapter: ["media_assets", "88api", "standard"].includes(value) ? value as VideoAdapter : undefined })} />
++                    {draft.videoAdapter === "media_assets" || (!draft.videoAdapter && !isDirect88Api(draft.baseUrl)) ? <span className="mt-1 block text-xs">本站 Seedance 自动使用统一素材接口。也可为其他支持的模型选择「本站素材上传」：本地图片和视频先上传本站，生成请求只引用素材 ID。参考视频请选择参考模式；自定义脚本仍优先。</span> : isDirect88Api(draft.baseUrl) || usesSeedanceAdapter(draft) ? <span className="mt-1 block text-xs">使用原有 88API 多素材上传流程，已有自定义脚本仍优先。</span> : null}
+                 </label> : null}
+                 <label className="block md:col-span-2">
+                     <span className="mb-1 block text-sm font-medium">API Key</span>
+diff --git a/web/src/components/video-settings-panel.tsx b/web/src/components/video-settings-panel.tsx
+index 849738e..7c9775e 100644
+--- a/web/src/components/video-settings-panel.tsx
++++ b/web/src/components/video-settings-panel.tsx
+@@ -1,3 +1,4 @@
++import { usesMediaAssetsAdapter } from "@/lib/media-assets";
+ import { getSeedanceCapabilities, usesSeedanceAdapter } from "@/lib/seedance-capabilities";
+ import { type ReactNode } from "react";
+ import { Slider } from "antd";
+@@ -73,6 +74,7 @@ export function VideoSettingsPanel({ config, onConfigChange, theme, showTitle =
+                 {showTitle ? <div className="text-lg font-semibold">{t("settingsPanels.video.title")}</div> : null}
+                 {usesSeedanceAdapter(requestConfig) && resolveModelScript(config, model) && getSeedanceCapabilities(modelOptionName(model)) ? <div role="status" className="text-xs" style={{ color: theme.node.muted }}>当前自定义脚本会覆盖内置接入。若仍是旧版单图脚本，请在渠道的视频模型脚本编辑器中清空脚本并保存，再使用多素材功能。</div> : null}
+                 {seedance ? <div className="text-xs" style={{ color: theme.node.muted }}>支持只传素材，未填写文字时会补充默认提示词。参考模式：图片最多 {seedance.maxImages} 张、视频 {seedance.maxVideos} 段、音频 {seedance.maxAudios} 段{seedance.maxMedia ? `，总计 ${seedance.maxMedia} 个` : ""}。{seedance.frames ? "首尾帧模式按连接顺序使用第一、第二张图片，不与音视频混用。" : "此模型不支持首尾帧。"}</div> : null}
++                {usesMediaAssetsAdapter(requestConfig, modelOptionName(model)) ? <div className="text-xs" style={{ color: theme.node.muted }}>本地图片和视频由本站上传并以素材 ID 调用。首尾帧按图片顺序使用，参考视频请选择参考模式。未填写文字时会补充默认提示词。素材在关联任务全部结束后保留 24 小时。</div> : null}
+                 {settingsError ? <div role="alert" className="text-sm" style={{ color: theme.node.text }}>{settingsError}</div> : null}
+                 <SettingGroup title={t("settingsPanels.video.quality")} color={theme.node.muted}>
+                     <div className="grid grid-cols-4 gap-2.5">
+diff --git a/web/src/i18n/locales/en-US.ts b/web/src/i18n/locales/en-US.ts
+index ed209fa..3b38642 100644
+--- a/web/src/i18n/locales/en-US.ts
++++ b/web/src/i18n/locales/en-US.ts
+@@ -210,6 +210,8 @@ export default {
+         busy: "The Video Studio is already running a task",
+         generated: "Video generated",
+         timeout: "Video generation timed out. Try again later.",
++        taskStillPending: "The task was submitted. Waiting or downloading was interrupted; resume the existing task.",
++        resumeTask: "Resume task",
+         resultTitle: "Generated video",
+         source: "Video Studio",
+         empty: "No video generated yet",
+diff --git a/web/src/i18n/locales/zh-CN.ts b/web/src/i18n/locales/zh-CN.ts
+index 456360b..e264b01 100644
+--- a/web/src/i18n/locales/zh-CN.ts
++++ b/web/src/i18n/locales/zh-CN.ts
+@@ -210,6 +210,8 @@ export default {
+         busy: "视频工作台已有任务正在运行",
+         generated: "视频已生成",
+         timeout: "视频生成超时，请稍后重试",
++        taskStillPending: "任务已提交。等待或下载暂时中断，可继续查询原任务",
++        resumeTask: "继续查询",
+         resultTitle: "生成视频",
+         source: "视频创作台",
+         empty: "还没有生成视频",
+diff --git a/web/src/lib/media-assets.ts b/web/src/lib/media-assets.ts
+new file mode 100644
+index 0000000..abdd3e8
+--- /dev/null
++++ b/web/src/lib/media-assets.ts
+@@ -0,0 +1,21 @@
++import { isDlnGateway, isDirect88Api, type VideoAdapter } from "./seedance-capabilities";
++
++// Automatic selection is limited to the gateway's published model IDs.
++// Other models opt into the same stable contract in the channel editor.
++const gatewayModels = new Set([
++    "doubao-seedance-2-0", "doubao-seedance-2-0-fast", "doubao-seedance-2-0-mini", "doubao-seedance-2-5",
++    "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628",
++    "sd-2.5-ch4", "SD2.0满血稳定933",
++]);
++
++export function usesMediaAssetsAdapter(config: { baseUrl: string; videoAdapter?: VideoAdapter }, model: string): boolean {
++    if (isDirect88Api(config.baseUrl)) return false;
++    if (config.videoAdapter) return config.videoAdapter === "media_assets";
++    return isDlnGateway(config.baseUrl) && gatewayModels.has(model);
++}
++
++export function getMediaAssetsVideoCapabilities(model: string) {
++    if (!gatewayModels.has(model)) return undefined;
++    const resolutions = model.includes("fast") || model.includes("mini") || model === "sd-2.5-ch4" || model === "SD2.0满血稳定933" ? ["720"] : ["720", "1080"];
++    return { resolutions, ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"] };
++}
+diff --git a/web/src/pages/canvas/project.tsx b/web/src/pages/canvas/project.tsx
+index bd34623..f51597b 100644
+--- a/web/src/pages/canvas/project.tsx
++++ b/web/src/pages/canvas/project.tsx
+@@ -8,7 +8,9 @@ import { useTranslation } from "react-i18next";
+ import { requestEdit, requestGeneration, requestImageQuestion } from "@/services/api/image";
+ import { requestAudioGeneration, storeGeneratedAudio } from "@/services/api/audio";
+ import { createVideoGenerationTask, isVideoTaskFailed, storeGeneratedVideo, waitForVideoGenerationTask } from "@/services/api/video";
+-import { defaultConfig, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
++import { defaultConfig, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, useEffectiveConfig } from "@/stores/use-config-store";
++import { usesMediaAssetsAdapter } from "@/lib/media-assets";
++import { seedanceDefaultPrompt } from "@/lib/seedance-capabilities";
+ import { ensureImagePreview, uploadImage } from "@/services/image-storage";
+ import { uploadMediaFile, type UploadedFile } from "@/services/file-storage";
+ import { nanoid } from "nanoid";
+@@ -2351,7 +2353,8 @@ function InfiniteCanvasPage() {
+             const generationContext = await hydrateNodeGenerationContext(
+                 buildNodeGenerationContext(nodeId, nodesRef.current, connectionsRef.current, editingTextNode ? t("canvas.projectPage.editTextPrompt", { source: sourceTextContent, prompt }) : prompt),
+             );
+-            const effectivePrompt = generationContext.prompt.trim();
++            const mediaVideo = mode === "video" && !resolveModelScript(generationConfig, generationConfig.model) && usesMediaAssetsAdapter(resolveModelRequestConfig(generationConfig, generationConfig.model), modelOptionName(generationConfig.model));
++            const effectivePrompt = generationContext.prompt.trim() || (mediaVideo && (generationContext.referenceImages.length || generationContext.referenceVideos.length) ? seedanceDefaultPrompt : "");
+             if (runController.signal.aborted) {
+                 finishGenerationRequest(nodeId, runController);
+                 setRunningNodeId(null);
+@@ -2764,7 +2767,8 @@ function InfiniteCanvasPage() {
+             }
+ 
+             const context = hasSavedImageMetadata ? null : await hydrateNodeGenerationContext(buildNodeGenerationContext(sourceNode.id, nodesRef.current, connectionsRef.current, sourceNode.metadata?.prompt || node.metadata?.prompt || ""));
+-            const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim();
++            const mediaVideo = node.type === CanvasNodeType.Video && !resolveModelScript(generationConfig, generationConfig.model) && usesMediaAssetsAdapter(resolveModelRequestConfig(generationConfig, generationConfig.model), modelOptionName(generationConfig.model));
++            const prompt = (savedImageMetadata?.prompt || context?.prompt || "").trim() || (mediaVideo && (context?.referenceImages.length || context?.referenceVideos.length) ? seedanceDefaultPrompt : "");
+             if (!prompt) {
+                 message.warning(t("canvas.projectPage.retryPromptMissing"));
+                 return;
+diff --git a/web/src/pages/video/index.tsx b/web/src/pages/video/index.tsx
+index 5c486e0..8d6004c 100644
+--- a/web/src/pages/video/index.tsx
++++ b/web/src/pages/video/index.tsx
+@@ -13,9 +13,10 @@ import { PromptSelectDialog } from "@/components/prompts/prompt-select-dialog";
+ import { VideoSettingsPanel, normalizeVideoResolutionValue, normalizeVideoSizeValue, videoModeLabel, videoResolutionLabel, videoSizeLabel } from "@/components/video-settings-panel";
+ import { canvasThemes } from "@/lib/canvas-theme";
+ import { clampVideoSeconds } from "@/lib/media-size";
++import { usesMediaAssetsAdapter } from "@/lib/media-assets";
+ import { getNiuVideoCapabilities } from "@/lib/video-capabilities";
+ import { formatBytes, formatDuration } from "@/lib/image-utils";
+-import { deleteStoredMedia, resolveMediaUrl } from "@/services/file-storage";
++import { deleteStoredMedia, resolveMediaUrl, uploadMediaFile } from "@/services/file-storage";
+ import { resolveImageUrl, ensureImagePreview, getImagePreviewRevision, previewUrlFor, subscribeImagePreviews, uploadImage } from "@/services/image-storage";
+ import { createVideoGenerationTask, pollVideoGenerationTask, storeGeneratedVideo, type VideoGenerationTask } from "@/services/api/video";
+ import { useAssetStore } from "@/stores/use-asset-store";
+@@ -23,6 +24,7 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
+ import { boolConfig, modelOptionLabel, modelOptionName, resolveModelRequestConfig, resolveModelScript, useConfigStore, useEffectiveConfig, type AiConfig } from "@/stores/use-config-store";
+ import { useThemeStore } from "@/stores/use-theme-store";
+ import type { ReferenceImage } from "@/types/image";
++import type { ReferenceVideo } from "@/types/media";
+ import i18n from "@/i18n";
+ 
+ type GeneratedVideo = {
+@@ -52,6 +54,7 @@ type GenerationLog = {
+     model: string;
+     config: GenerationLogConfig;
+     references: ReferenceImage[];
++    videos: ReferenceVideo[];
+     durationMs: number;
+     size: string;
+     resolution: string;
+@@ -74,6 +77,7 @@ export default function VideoPage() {
+     const { t } = useTranslation();
+     useSyncExternalStore(subscribeImagePreviews, getImagePreviewRevision);
+     const fileInputRef = useRef<HTMLInputElement>(null);
++    const videoFileInputRef = useRef<HTMLInputElement>(null);
+     const dragDepthRef = useRef(0);
+     const activeLogIdsRef = useRef<Set<string>>(new Set());
+     const config = useConfigStore((state) => state.config);
+@@ -84,6 +88,8 @@ export default function VideoPage() {
+     const addAsset = useAssetStore((state) => state.addAsset);
+     const [prompt, setPrompt] = useState("");
+     const [references, setReferences] = useState<ReferenceImage[]>([]);
++    const [referenceVideos, setReferenceVideos] = useState<ReferenceVideo[]>([]);
++    const [uploadingVideos, setUploadingVideos] = useState(false);
+     const [results, setResults] = useState<GenerationResult[]>([]);
+     const [logs, setLogs] = useState<GenerationLog[]>([]);
+     const [running, setRunning] = useState(false);
+@@ -105,9 +111,11 @@ export default function VideoPage() {
+     const agentTaskIdRef = useRef<string | undefined>(undefined);
+ 
+     const model = effectiveConfig.videoModel || effectiveConfig.model;
+-    const seedance = usesSeedanceAdapter(resolveModelRequestConfig(effectiveConfig, model)) ? getSeedanceCapabilities(modelOptionName(model)) : undefined;
+-    const maxReferenceImages = seedance?.maxImages ?? 7;
+-    const canGenerate = Boolean(prompt.trim() || (references.length && seedance));
++    const requestConfig = resolveModelRequestConfig(effectiveConfig, model);
++    const seedance = usesSeedanceAdapter(requestConfig) ? getSeedanceCapabilities(modelOptionName(model)) : undefined;
++    const supportsReferenceVideos = usesMediaAssetsAdapter(requestConfig, modelOptionName(model)) || Boolean(seedance);
++    const maxReferenceImages = usesMediaAssetsAdapter(requestConfig, modelOptionName(model)) ? Number.POSITIVE_INFINITY : seedance?.maxImages ?? 7;
++    const canGenerate = Boolean(prompt.trim() || ((references.length || referenceVideos.length) && supportsReferenceVideos));
+ 
+     useEffect(() => {
+         if (!running || !startedAt) return;
+@@ -133,6 +141,26 @@ export default function VideoPage() {
+         setReferences((value) => [...value, ...nextReferences].slice(0, maxReferenceImages));
+     };
+ 
++    const addReferenceVideos = async (files?: FileList | null) => {
++        const selectedFiles = Array.from(files || []);
++        if (selectedFiles.some((file) => !file.type.startsWith("video/"))) message.warning("请选择视频文件");
++        const videoFiles = selectedFiles.filter((file) => file.type.startsWith("video/"));
++        if (!videoFiles.length) return;
++        setUploadingVideos(true);
++        try {
++            const nextVideos = await Promise.all(videoFiles.map(async (file) => {
++                const stored = await uploadMediaFile(file, "video-reference");
++                return { id: nanoid(), name: file.name, type: stored.mimeType, ...stored };
++            }));
++            setReferenceVideos((value) => [...value, ...nextVideos]);
++            updateConfig("videoMode", "reference");
++        } catch (error) {
++            message.error(error instanceof Error ? error.message : "参考视频读取失败");
++        } finally {
++            setUploadingVideos(false);
++        }
++    };
++
+     const handleReferenceDragEnter = (event: DragEvent<HTMLDivElement>) => {
+         event.preventDefault();
+         dragDepthRef.current += 1;
+@@ -188,15 +216,15 @@ export default function VideoPage() {
+         const batchStartedAt = performance.now();
+         setStartedAt(batchStartedAt);
+         try {
+-            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references);
+-            const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: 0, status: "pending", task });
++            const task = await createVideoGenerationTask(snapshot.config, snapshot.text, snapshot.references, { videos: snapshot.videos });
++            const log = buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videos: snapshot.videos, durationMs: 0, status: "pending", task });
+             await saveLog(log, false);
+             void pollGenerationLog(log, snapshot.config, agentTaskId);
+         } catch (error) {
+             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
+             setResults([{ id: nanoid(), status: "failed", error: errorMessage }]);
+             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
+-            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
++            await saveLog(buildLog({ prompt: snapshot.text, model, config: snapshot.config, references: snapshot.references, videos: snapshot.videos, durationMs: performance.now() - batchStartedAt, status: "failed", error: errorMessage }));
+             message.error(errorMessage);
+             setRunning(false);
+         }
+@@ -225,7 +253,16 @@ export default function VideoPage() {
+     }, [autoRunToken]);
+ 
+     const buildRequestSnapshot = () => {
+-        const text = prompt.trim() || (references.length && seedance ? seedanceDefaultPrompt : "");
++        if (uploadingVideos) return null;
++        if (referenceVideos.length && !supportsReferenceVideos) {
++            message.warning("请切换到支持参考视频的模型或移除参考视频");
++            return null;
++        }
++        if (referenceVideos.length && effectiveConfig.videoMode !== "reference") {
++            message.warning("参考视频不能与首尾帧模式混用，请切换到参考模式");
++            return null;
++        }
++        const text = prompt.trim() || ((references.length || referenceVideos.length) && supportsReferenceVideos ? seedanceDefaultPrompt : "");
+         if (!text) {
+             message.error(t("videoWorkbench.promptRequired"));
+             return null;
+@@ -235,13 +272,18 @@ export default function VideoPage() {
+             openConfigDialog(true);
+             return null;
+         }
+-        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references] };
++        return { text, config: buildVideoConfig(effectiveConfig, model), references: [...references], videos: [...referenceVideos] };
+     };
+ 
+     const retryResult = () => {
+         void generate();
+     };
+ 
++    const resumeResult = (id: string) => {
++        const log = logs.find((item) => item.id === id);
++        if (log?.task) void pollGenerationLog(log);
++    };
++
+     const downloadVideo = (video: GeneratedVideo) => {
+         saveAs(video.url, "video.mp4");
+     };
+@@ -265,6 +307,19 @@ export default function VideoPage() {
+         } else if (payload.kind === "image") {
+             const stored = await uploadImage(payload.dataUrl);
+             setReferences((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, dataUrl: stored.url, storageKey: stored.storageKey }].slice(0, maxReferenceImages));
++        } else if (payload.kind === "video") {
++            if (!supportsReferenceVideos) {
++                message.warning("当前模型不支持参考视频，请先切换模型");
++                return;
++            }
++            try {
++                const stored = await uploadMediaFile(await resolveMediaUrl(payload.storageKey, payload.url), "video-reference");
++                setReferenceVideos((value) => [...value, { id: nanoid(), name: payload.title, type: stored.mimeType, ...stored }]);
++                updateConfig("videoMode", "reference");
++            } catch (error) {
++                message.error(error instanceof Error ? error.message : "参考视频读取失败");
++                return;
++            }
+         }
+         setAssetPickerOpen(false);
+     };
+@@ -272,6 +327,7 @@ export default function VideoPage() {
+     const createSession = () => {
+         setPrompt("");
+         setReferences([]);
++        setReferenceVideos([]);
+         setResults([]);
+         setElapsedMs(0);
+         setStartedAt(0);
+@@ -318,6 +374,8 @@ export default function VideoPage() {
+         setStartedAt((value) => value || performance.now());
+         setResults((value) => (value.length ? value : [{ id: log.id, status: "pending" }]));
+         const taskConfig = buildVideoConfig({ ...effectiveConfig, ...log.config }, log.task.model || log.model);
++        const mediaAssets = usesMediaAssetsAdapter(resolveModelRequestConfig(configOverride || taskConfig, log.task.model), modelOptionName(log.task.model));
++        let terminalFailure = false;
+         try {
+             for (let attempt = 0; attempt < 120; attempt += 1) {
+                 const state = await pollVideoGenerationTask(configOverride || taskConfig, log.task);
+@@ -339,12 +397,23 @@ export default function VideoPage() {
+                     message.success(t("videoWorkbench.generated"));
+                     return;
+                 }
+-                if (state.status === "failed") throw new Error(state.error);
++                if (state.status === "failed") {
++                    terminalFailure = true;
++                    throw new Error(state.error);
++                }
+                 if (attempt === 119) throw new Error(t("videoWorkbench.timeout"));
+                 await delay(2500);
+             }
+         } catch (error) {
+             const errorMessage = error instanceof Error ? error.message : t("workbench.generationFailed");
++            if (mediaAssets && !terminalFailure) {
++                // An accepted task can still be generating, or its download can
++                // temporarily fail. Keep its ID durable; resuming only queries it.
++                setResults([{ id: log.id, status: "pending", error: errorMessage }]);
++                await saveLog({ ...log, status: "pending", error: errorMessage }, false);
++                message.warning(t("videoWorkbench.taskStillPending"));
++                return;
++            }
+             setResults([{ id: log.id, status: "failed", error: errorMessage }]);
+             if (agentTaskId) updateAgentTask(agentTaskId, { status: "failed", successCount: 0, failCount: 1, error: errorMessage });
+             await saveLog({ ...log, status: "failed", durationMs: Date.now() - log.createdAt, error: errorMessage });
+@@ -363,6 +432,7 @@ export default function VideoPage() {
+         setLogsOpen(false);
+         setPrompt(log.prompt);
+         setReferences(log.references || []);
++        setReferenceVideos(log.videos || []);
+         if (log.config.videoModel || log.model) updateConfig("videoModel", log.config.videoModel || log.model);
+         if (log.config.size) updateConfig("size", log.config.size);
+         if (log.config.vquality) updateConfig("vquality", log.config.vquality);
+@@ -370,7 +440,7 @@ export default function VideoPage() {
+         if (log.config.videoGenerateAudio) updateConfig("videoGenerateAudio", log.config.videoGenerateAudio);
+         if (log.config.videoWatermark) updateConfig("videoWatermark", log.config.videoWatermark);
+         if (log.config.videoMode) updateConfig("videoMode", log.config.videoMode);
+-        setResults(log.status === "pending" ? [{ id: log.id, status: "pending" }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed") }]);
++        setResults(log.status === "pending" ? [{ id: log.id, status: "pending", error: log.error }] : log.video ? [{ id: log.video.id, status: "success", video: log.video }] : [{ id: log.id, status: "failed", error: log.error || t("workbench.generationFailed") }]);
+     };
+ 
+     return (
+@@ -442,10 +512,40 @@ export default function VideoPage() {
+                                             </button>
+                                         </div>
+                                     ))}
+-                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget ? t("videoWorkbench.dropReferences") : t("videoWorkbench.noImages")}</div> : null}
++                                    {!references.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">{referenceDragTarget ? t("videoWorkbench.dropReferences") : usesMediaAssetsAdapter(requestConfig, modelOptionName(model)) ? "上传或拖入参考图片，素材数量以模型要求为准" : t("videoWorkbench.noImages")}</div> : null}
+                                 </div>
+                             </div>
+ 
++                            {supportsReferenceVideos || referenceVideos.length ? (
++                                <div className="min-w-0">
++                                    <div className="mb-2 flex items-center justify-between gap-3">
++                                        <span className="text-base font-semibold">参考视频</span>
++                                        <Button size="small" icon={<Upload className="size-3.5" />} loading={uploadingVideos} disabled={!supportsReferenceVideos || running} onClick={() => videoFileInputRef.current?.click()}>
++                                            {t("workbench.upload")}
++                                        </Button>
++                                    </div>
++                                    <div className="hover-scrollbar flex min-h-24 w-full min-w-0 gap-2 overflow-x-auto rounded-lg border border-dashed border-stone-300 p-2 dark:border-stone-700">
++                                        {referenceVideos.map((item, index) => (
++                                            <div key={item.id} className="relative w-48 shrink-0 overflow-hidden rounded-md border border-stone-200 dark:border-stone-800">
++                                                <video src={item.url} controls preload="metadata" aria-label={item.name} className="aspect-video w-full object-contain" />
++                                                <div className="flex items-center justify-between gap-2 px-2 py-1 text-xs">
++                                                    <span className="min-w-0 truncate" title={item.name}>{index + 1}. {item.name}</span>
++                                                    <Button size="small" type="text" danger icon={<Trash2 className="size-3.5" />} aria-label={`移除参考视频 ${index + 1}`} onClick={() => setReferenceVideos((value) => value.filter((video) => video.id !== item.id))} />
++                                                </div>
++                                                {referenceVideos.length > 1 ? (
++                                                    <div className="flex justify-between px-1 pb-1">
++                                                        <Button size="small" type="text" icon={<ArrowLeft className="size-3" />} aria-label={`向前移动参考视频 ${index + 1}`} disabled={index === 0} onClick={() => setReferenceVideos((value) => moveListItem(value, index, -1))} />
++                                                        <Button size="small" type="text" icon={<ArrowRight className="size-3" />} aria-label={`向后移动参考视频 ${index + 1}`} disabled={index === referenceVideos.length - 1} onClick={() => setReferenceVideos((value) => moveListItem(value, index, 1))} />
++                                                    </div>
++                                                ) : null}
++                                            </div>
++                                        ))}
++                                        {!referenceVideos.length ? <div className="flex min-w-full items-center justify-center text-sm text-stone-500">上传本地视频作为动作或镜头参考</div> : null}
++                                    </div>
++                                    <p className="mt-2 text-xs text-stone-500">{supportsReferenceVideos ? "参考视频按显示顺序提交，不能与首尾帧模式混用。具体素材要求以模型说明为准。" : "当前模型不支持参考视频，请切换模型或移除参考视频。"}</p>
++                                </div>
++                            ) : null}
++
+                             <div className="flex items-center justify-between rounded-lg border border-stone-200 bg-stone-50 px-3 py-2 text-sm dark:border-stone-800 dark:bg-stone-900 sm:hidden">
+                                 <span className="truncate text-stone-500 dark:text-stone-400">
+                                     {modelOptionLabel(effectiveConfig, model)} · {videoResolutionLabel(effectiveConfig.vquality)} · {videoSizeLabel(effectiveConfig.size)} · {normalizeVideoSeconds(effectiveConfig.videoSeconds)}s · {videoModeLabel(effectiveConfig.videoMode)}
+@@ -461,7 +561,7 @@ export default function VideoPage() {
+                         </div>
+ 
+                         <div className="mt-auto pt-6">
+-                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running} onClick={() => void generate()}>
++                            <Button type="primary" size="large" block icon={<Sparkles className="size-4" />} loading={running} disabled={!canGenerate || running || uploadingVideos} onClick={() => void generate()}>
+                                 {t("workbench.generate")}
+                             </Button>
+                         </div>
+@@ -474,7 +574,7 @@ export default function VideoPage() {
+                         </div>
+                         {results.length ? (
+                             <div className="grid gap-4">
+-                                {results.map((result) => (result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} /> : <PendingVideoCard key={result.id} />))}
++                                {results.map((result) => (result.status === "success" && result.video ? <ResultVideoCard key={result.id} video={result.video} onDownload={downloadVideo} onSaveAsset={saveResultToAssets} /> : result.status === "failed" ? <FailedVideoCard key={result.id} error={result.error || t("workbench.generationFailed")} onRetry={retryResult} /> : <PendingVideoCard key={result.id} interrupted={!running && Boolean(result.error)} onResume={() => resumeResult(result.id)} />))}
+                             </div>
+                         ) : (
+                             <div className="flex min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-stone-300 text-center dark:border-stone-700 lg:min-h-[560px]">
+@@ -496,6 +596,17 @@ export default function VideoPage() {
+                     event.target.value = "";
+                 }}
+             />
++            <input
++                ref={videoFileInputRef}
++                type="file"
++                accept="video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov"
++                multiple
++                className="hidden"
++                onChange={(event) => {
++                    void addReferenceVideos(event.target.files);
++                    event.target.value = "";
++                }}
++            />
+             <Drawer title={t("workbench.logs")} placement="bottom" size="large" open={logsOpen} onClose={() => setLogsOpen(false)}>
+                 <LogPanel logs={logs} selectedLogIds={selectedLogIds} activeLogId={previewLog?.id} onSelectedLogIdsChange={setSelectedLogIds} onCreateSession={createSession} onDeleteSelected={() => setDeleteConfirmOpen(true)} onPreviewLog={previewGenerationLog} />
+             </Drawer>
+@@ -556,13 +667,14 @@ function ResultVideoCard({ video, onDownload, onSaveAsset }: { video: GeneratedV
+     );
+ }
+ 
+-function PendingVideoCard() {
++function PendingVideoCard({ interrupted, onResume }: { interrupted?: boolean; onResume?: () => void }) {
+     const { t } = useTranslation();
+     return (
+         <div className="relative aspect-video overflow-hidden rounded-lg border border-dashed border-stone-300 bg-stone-50 dark:border-stone-700 dark:bg-stone-900">
+             <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-sm text-stone-500 dark:text-stone-400">
+-                <LoaderCircle className="size-6 animate-spin" />
+-                <span>{t("workbench.generating")}</span>
++                {!interrupted ? <LoaderCircle className="size-6 animate-spin" /> : null}
++                <span>{t(interrupted ? "videoWorkbench.taskStillPending" : "workbench.generating")}</span>
++                {interrupted ? <Button size="small" onClick={onResume}>{t("videoWorkbench.resumeTask")}</Button> : null}
+             </div>
+         </div>
+     );
+@@ -683,6 +795,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
+             return { ...item, dataUrl: await resolveImageUrl(item.storageKey, item.dataUrl) };
+         }),
+     );
++    const videos = await Promise.all((log.videos || []).map(async (item) => ({ ...item, url: await resolveMediaUrl(item.storageKey, item.url) })));
+     const config = normalizeLogConfig(log);
+     return {
+         id: log.id || nanoid(),
+@@ -693,6 +806,7 @@ async function normalizeLog(log: Partial<GenerationLog>): Promise<GenerationLog>
+         model: log.model || config.videoModel || "",
+         config,
+         references,
++        videos,
+         durationMs: log.durationMs || 0,
+         size: log.size || config.size || "",
+         resolution: normalizeResolution(log.resolution || config.vquality || ""),
+@@ -708,6 +822,7 @@ function serializeLog(log: GenerationLog): GenerationLog {
+     return {
+         ...log,
+         references: log.references.map((item) => ({ ...item, dataUrl: item.storageKey ? "" : item.dataUrl })),
++        videos: log.videos.map((item) => ({ ...item, url: item.storageKey ? "" : item.url })),
+         video: log.video?.storageKey ? { ...log.video, url: "" } : log.video,
+     };
+ }
+@@ -743,7 +858,7 @@ function normalizeLogConfig(log: Partial<GenerationLog>): GenerationLogConfig {
+     };
+ }
+ 
+-function buildLog({ prompt, model, config, references, durationMs, status, task, video, error }: { prompt: string; model: string; config: AiConfig; references: ReferenceImage[]; durationMs: number; status: GenerationLog["status"]; task?: VideoGenerationTask; video?: GeneratedVideo; error?: string }): GenerationLog {
++function buildLog({ prompt, model, config, references, videos, durationMs, status, task, video, error }: { prompt: string; model: string; config: AiConfig; references: ReferenceImage[]; videos: ReferenceVideo[]; durationMs: number; status: GenerationLog["status"]; task?: VideoGenerationTask; video?: GeneratedVideo; error?: string }): GenerationLog {
+     const logConfig = {
+         model: config.model,
+         videoModel: config.videoModel,
+@@ -763,6 +878,7 @@ function buildLog({ prompt, model, config, references, durationMs, status, task,
+         model,
+         config: logConfig,
+         references,
++        videos,
+         durationMs,
+         size: logConfig.size,
+         resolution: logConfig.vquality,
+diff --git a/web/src/services/api/media-assets-video.ts b/web/src/services/api/media-assets-video.ts
+new file mode 100644
+index 0000000..303821f
+--- /dev/null
++++ b/web/src/services/api/media-assets-video.ts
+@@ -0,0 +1,48 @@
++import axios from "axios";
++import { inferVideoRatio, parseVideoResolution } from "@/lib/media-size";
++import { seedanceDefaultPrompt } from "@/lib/seedance-capabilities";
++import { boolConfig, buildApiUrl, type AiConfig } from "@/stores/use-config-store";
++
++type MediaAsset = { id: string; object: string; status: string; type: "image" | "video" };
++type MediaReference = { asset_id: string; role: "first_frame" | "last_frame" | "reference_image" | "reference_video" };
++const extensions: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "video/mp4": "mp4", "video/webm": "webm", "video/quicktime": "mov" };
++
++export async function createMediaAssetsVideoTask(config: AiConfig, model: string, prompt: string, images: File[], videos: File[], audios: File[], signal?: AbortSignal): Promise<string> {
++    signal?.throwIfAborted();
++    if (audios.length) throw new Error("本站素材接口暂支持图片和视频，请移除参考音频");
++    const frames = config.videoMode === "frames" && images.length > 0;
++    if (frames && (images.length > 2 || videos.length)) throw new Error("首尾帧模式只能使用一张首帧或两张首尾帧图片；参考视频请选择参考模式");
++    if (config.videoMode === "frames" && videos.length) throw new Error("参考视频请选择参考模式");
++    for (const file of [...images, ...videos]) {
++        if (!file.size || !["image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm", "video/quicktime"].includes(file.type)) throw new Error("请选择 PNG、JPEG、WebP 图片或 MP4、WebM、MOV 视频");
++    }
++    const text = prompt.trim() || (images.length + videos.length ? seedanceDefaultPrompt : "");
++    if (!text) throw new Error("请填写提示词或连接参考素材");
++    const duration = Number(config.videoSeconds || "6");
++    if (!Number.isSafeInteger(duration) || duration < 1 || duration > 3600) throw new Error("视频时长必须是 1–3600 秒内的整数，具体范围取决于模型");
++    const ratio = inferVideoRatio(config.size);
++    if (ratio === "auto") throw new Error("请选择明确的视频比例");
++    const media: MediaReference[] = [];
++    // Each upload streams a binary file to our gateway. No upstream upload
++    // ticket, provider URL, or provider credential enters the browser.
++    for (const [files, type] of [[images, "image"], [videos, "video"]] as const) {
++        for (let index = 0; index < files.length; index += 1) {
++            signal?.throwIfAborted();
++            const body = new FormData();
++            const file = files[index];
++            body.append("file", new File([file], `reference.${extensions[file.type]}`, { type: file.type }));
++            const response = await axios.post<MediaAsset>(buildApiUrl(config.baseUrl, "/media/assets"), body, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal });
++            const asset = response.data;
++            if (asset.object !== "media.asset" || asset.status !== "ready" || asset.type !== type || !/^media_[a-zA-Z0-9_-]+$/.test(asset.id)) throw new Error("素材上传未完成，未提交生成任务");
++            media.push({ asset_id: asset.id, role: type === "video" ? "reference_video" : frames ? index === 0 ? "first_frame" : "last_frame" : "reference_image" });
++        }
++    }
++    signal?.throwIfAborted();
++    const resolution = parseVideoResolution(config.vquality);
++    const response = await axios.post<{ id?: string }>(buildApiUrl(config.baseUrl, "/videos"), {
++        model, prompt: text, duration, resolution: resolution.endsWith("k") ? resolution : `${resolution}p`, ratio, ...(media.length ? { media } : {}),
++        ...(model.startsWith("doubao-seedance-") ? { generate_audio: boolConfig(config.videoGenerateAudio, true) } : {}),
++    }, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal });
++    if (typeof response.data.id !== "string" || !response.data.id.trim()) throw new Error("网关未返回任务 ID，请先核对任务记录，不要重复提交");
++    return response.data.id;
++}
+diff --git a/web/src/services/api/video.ts b/web/src/services/api/video.ts
+index d9ed421..13a4f3f 100644
+--- a/web/src/services/api/video.ts
++++ b/web/src/services/api/video.ts
+@@ -1,5 +1,7 @@
+ import { getSeedanceCapabilities, usesSeedanceAdapter } from "@/lib/seedance-capabilities";
+ import { createSeedanceTask } from "./seedance-video";
++import { usesMediaAssetsAdapter } from "@/lib/media-assets";
++import { createMediaAssetsVideoTask } from "./media-assets-video";
+ import axios from "axios";
+ import { nanoid } from "nanoid";
+ 
+@@ -159,6 +161,14 @@ async function createOpenAIVideoTask(config: AiConfig, model: string, prompt: st
+     const images = await Promise.all(references.map(async (image) => dataUrlToFile({ ...image, dataUrl: await imageToDataUrl(image) })));
+     const videos = await Promise.all((options?.videos || []).map((video) => referenceMediaToFile(video, "ref.mp4", "invalidReferenceVideo", options)));
+     const audios = await Promise.all((options?.audios || []).map((audio) => referenceMediaToFile(audio, "ref.mp3", "invalidReferenceAudio", options)));
++    if (usesMediaAssetsAdapter(config, modelOptionName(model))) {
++        try {
++            const id = await createMediaAssetsVideoTask(config, modelOptionName(model), prompt, images, videos, audios, options?.signal);
++            return { id, provider: "openai", model };
++        } catch (error) {
++            throw new Error(readAxiosError(error, apiText("videoTaskCreateFailed")));
++        }
++    }
+     if (usesSeedanceAdapter(config) && getSeedanceCapabilities(modelOptionName(model))) {
+         try {
+             const id = await createSeedanceTask(config, modelOptionName(model), prompt, images, videos, audios, options?.signal);
+@@ -223,7 +233,8 @@ async function pollOpenAIVideoTask(config: AiConfig, task: VideoGenerationTask,
+             return { status: "failed", error: message || apiText("videoGenerationFailed") };
+         }
+         const url = videoResultUrl(video);
+-        if (url && (!usesSeedanceAdapter(config) || !getSeedanceCapabilities(modelOptionName(task.model)) || video.status === "completed")) return { status: "completed", result: await videoResultFromUrl(url, options) };
++        const mediaAssets = usesMediaAssetsAdapter(config, modelOptionName(task.model));
++        if (url && !mediaAssets && (!usesSeedanceAdapter(config) || !getSeedanceCapabilities(modelOptionName(task.model)) || video.status === "completed")) return { status: "completed", result: await videoResultFromUrl(url, options) };
+         if (video.status === "completed") {
+             const content = await axios.get<Blob>(aiApiUrl(config, `/videos/${encodeURIComponent(task.id)}/content`), { headers: aiHeaders(config), responseType: "blob", signal: options?.signal });
+             await assertVideoBlob(content.data);
+diff --git a/web/src/stores/use-config-store.ts b/web/src/stores/use-config-store.ts
+index 636f377..52b77fb 100644
+--- a/web/src/stores/use-config-store.ts
++++ b/web/src/stores/use-config-store.ts
+@@ -314,7 +314,7 @@ export function createModelChannel(channel?: Partial<ModelChannel>): ModelChanne
+         apiKey: channel?.apiKey || "",
+         apiFormat,
+         models: normalizeChannelModels(channel?.models),
+-        ...(channel?.videoAdapter === "88api" || channel?.videoAdapter === "standard" ? { videoAdapter: channel.videoAdapter } : {}),
++        ...(channel?.videoAdapter === "media_assets" || channel?.videoAdapter === "88api" || channel?.videoAdapter === "standard" ? { videoAdapter: channel.videoAdapter } : {}),
+     };
+ }
+ 
+diff --git a/web/tests/media-assets-video.test.ts b/web/tests/media-assets-video.test.ts
+new file mode 100644
+index 0000000..d59a58c
+--- /dev/null
++++ b/web/tests/media-assets-video.test.ts
+@@ -0,0 +1,144 @@
++import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "bun:test";
++import axios from "axios";
++import { installBrowserStorage } from "./helpers/browser-storage";
++import type { AiConfig } from "../src/stores/use-config-store";
++
++let restore: () => void;
++let defaults: AiConfig;
++let create: typeof import("../src/services/api/media-assets-video").createMediaAssetsVideoTask;
++const adapter = axios.defaults.adapter;
++const requests: { url: string; data: unknown; authorization: string }[] = [];
++const image = () => new File(["fixture"], "image.png", { type: "image/png" });
++const video = () => new File(["fixture"], "video.mp4", { type: "video/mp4" });
++const config = (patch: Partial<AiConfig> = {}): AiConfig => ({ ...structuredClone(defaults), model: "doubao-seedance-2-5", baseUrl: "https://www.daliniuai.com", apiKey: "customer-fixture", videoMode: "reference", size: "16:9", vquality: "720", videoSeconds: "6", ...patch });
++
++beforeAll(async () => {
++    restore = installBrowserStorage();
++    ({ defaultConfig: defaults } = await import("../src/stores/use-config-store"));
++    ({ createMediaAssetsVideoTask: create } = await import("../src/services/api/media-assets-video"));
++});
++beforeEach(() => {
++    requests.length = 0;
++    axios.defaults.adapter = async request => {
++        const data = request.data instanceof FormData ? request.data : JSON.parse(request.data);
++        requests.push({ url: request.url!, data, authorization: String(request.headers.Authorization) });
++        const file = data instanceof FormData ? data.get("file") as File : undefined;
++        return { config: request, status: 200, statusText: "OK", headers: {}, data: file ? { id: `media_${requests.length}`, object: "media.asset", status: "ready", type: file.type.startsWith("image/") ? "image" : "video" } : { id: "public-task" } };
++    };
++});
++afterEach(() => { axios.defaults.adapter = adapter; });
++afterAll(() => restore());
++
++test("binary files upload only to our gateway and generation uses ordered asset IDs", async () => {
++    const cfg = config();
++    expect(await create(cfg, cfg.model, "", [image()], [video()], [])).toBe("public-task");
++    expect(requests.map(request => request.url)).toEqual(["https://www.daliniuai.com/v1/media/assets", "https://www.daliniuai.com/v1/media/assets", "https://www.daliniuai.com/v1/videos"]);
++    expect(requests.every(request => request.authorization === "Bearer customer-fixture")).toBe(true);
++    expect((requests[0].data as FormData).get("file")).toBeInstanceOf(File);
++    expect(((requests[0].data as FormData).get("file") as File).name).toBe("reference.png");
++    expect(requests[2].data).toMatchObject({ duration: 6, resolution: "720p", ratio: "16:9", media: [{ asset_id: "media_1", role: "reference_image" }, { asset_id: "media_2", role: "reference_video" }] });
++    expect(JSON.stringify(requests[2].data)).not.toContain("https:");
++});
++
++test("frames preserve ordering and invalid mixed references fail before uploading", async () => {
++    const cfg = config({ videoMode: "frames" });
++    await create(cfg, cfg.model, "move", [image(), image()], [], []);
++    expect((requests[2].data as Record<string, unknown>).media).toEqual([{ asset_id: "media_1", role: "first_frame" }, { asset_id: "media_2", role: "last_frame" }]);
++    requests.length = 0;
++    await expect(create(cfg, cfg.model, "move", [image()], [video()], [])).rejects.toThrow("首尾帧");
++    expect(requests).toHaveLength(0);
++});
++
++test("text-only generation omits media instead of sending an invalid empty list", async () => {
++    const cfg = config();
++    await create(cfg, cfg.model, "A blue sky", [], [], []);
++    expect(requests).toHaveLength(1);
++    expect(requests[0].data).not.toHaveProperty("media");
++});
++
++test("upload failure or cancellation never submits generation; create failure is not retried", async () => {
++    let calls = 0;
++    axios.defaults.adapter = async () => { calls += 1; throw new Error("fixture failure"); };
++    const cfg = config();
++    await expect(create(cfg, cfg.model, "move", [image()], [], [])).rejects.toThrow("fixture failure");
++    expect(calls).toBe(1);
++    calls = 0;
++    await expect(create(cfg, cfg.model, "move", [], [], [])).rejects.toThrow("fixture failure");
++    expect(calls).toBe(1);
++    calls = 0;
++    await expect(create(cfg, cfg.model, "move", [image()], [], [], AbortSignal.abort())).rejects.toThrow();
++    expect(calls).toBe(0);
++});
++
++test("generic opt-in persists and automatic model routing preserves other channels", async () => {
++    const { createModelChannel, resolveModelRequestConfig } = await import("../src/stores/use-config-store");
++    const { usesMediaAssetsAdapter } = await import("../src/lib/media-assets");
++    const channel = createModelChannel({ id: "ours", baseUrl: "https://gateway.example", videoAdapter: "media_assets", models: [{ name: "future-model", capability: "video" }] });
++    const selected = resolveModelRequestConfig({ ...config(), channels: [channel] }, "ours::future-model");
++    expect(usesMediaAssetsAdapter(selected, "future-model")).toBe(true);
++    expect(usesMediaAssetsAdapter(config(), "doubao-seedance-2-5")).toBe(true);
++    expect(usesMediaAssetsAdapter(config(), "SD2.0")).toBe(false);
++    expect(usesMediaAssetsAdapter(config({ baseUrl: "https://other.example" }), "doubao-seedance-2-5")).toBe(false);
++    expect(usesMediaAssetsAdapter(config({ videoAdapter: "standard" }), "doubao-seedance-2-5")).toBe(false);
++});
++
++test("poll waits for completion and downloads through our authenticated content route", async () => {
++    const { pollVideoGenerationTask } = await import("../src/services/api/video");
++    const task = { id: "public-task", provider: "openai" as const, model: "ours::doubao-seedance-2-5" };
++    const selected = config({ model: task.model, channels: [{ id: "ours", name: "Our gateway", baseUrl: "https://www.daliniuai.com", apiKey: "customer-fixture", apiFormat: "openai", models: [{ name: "doubao-seedance-2-5", capability: "video" }] }] });
++    let status = "in_progress";
++    const calls: string[] = [];
++    axios.defaults.adapter = async request => {
++        calls.push(request.url!);
++        expect(request.headers.Authorization).toBe("Bearer customer-fixture");
++        return { config: request, status: 200, statusText: "OK", headers: {}, data: request.url!.endsWith("/content") ? new Blob(["video"], { type: "video/mp4" }) : { status, url: "https://supplier.example/secret.mp4" } };
++    };
++    expect(await pollVideoGenerationTask(selected, task)).toEqual({ status: "pending" });
++    status = "completed";
++    expect((await pollVideoGenerationTask(selected, task)).status).toBe("completed");
++    expect(calls).toEqual(["https://www.daliniuai.com/v1/videos/public-task", "https://www.daliniuai.com/v1/videos/public-task", "https://www.daliniuai.com/v1/videos/public-task/content"]);
++});
++
++test("interrupted polling and downloads resume the same accepted task without creating or uploading", async () => {
++    const { waitForVideoGenerationTask, isVideoTaskFailed } = await import("../src/services/api/video");
++    const cfg = config({ model: "ours::doubao-seedance-2-5", channels: [{ id: "ours", name: "Our gateway", baseUrl: "https://www.daliniuai.com", apiKey: "customer-fixture", apiFormat: "openai", models: [{ name: "doubao-seedance-2-5", capability: "video" }] }] });
++    const task = { id: "accepted-public-task", provider: "openai" as const, model: cfg.model };
++    const calls: { method: string; url: string }[] = [];
++    let queryFails = true;
++    let downloadFails = true;
++    let status = "completed";
++    axios.defaults.adapter = async request => {
++        calls.push({ method: request.method!, url: request.url! });
++        expect(request.headers.Authorization).toBe("Bearer customer-fixture");
++        if (!request.url!.endsWith("/content") && queryFails) {
++            queryFails = false;
++            throw new Error("temporary query interruption");
++        }
++        if (request.url!.endsWith("/content") && downloadFails) {
++            downloadFails = false;
++            throw new Error("temporary download interruption");
++        }
++        return { config: request, status: 200, statusText: "OK", headers: {}, data: request.url!.endsWith("/content") ? new Blob(["video"], { type: "video/mp4" }) : { status, error: status === "failed" ? { message: "Model rejected the input" } : undefined } };
++    };
++    for (const message of ["temporary query interruption", "temporary download interruption"]) {
++        const error = await waitForVideoGenerationTask(cfg, task).then(() => undefined, error => error);
++        expect(error.message).toContain(message);
++        expect(isVideoTaskFailed(error)).toBe(false);
++    }
++    expect((await waitForVideoGenerationTask(cfg, task)).blob).toBeInstanceOf(Blob);
++    status = "failed";
++    const terminalError = await waitForVideoGenerationTask(cfg, task).then(() => undefined, error => error);
++    expect(isVideoTaskFailed(terminalError)).toBe(true);
++    expect(calls.every(call => call.method === "get")).toBe(true);
++    expect(calls.every(call => call.url.startsWith("https://www.daliniuai.com/v1/videos/accepted-public-task"))).toBe(true);
++    expect(calls.filter(call => call.url.endsWith("/content"))).toHaveLength(2);
++});
++
++
++test("resume controls resolve video-workbench translations in both languages", async () => {
++    const { default: i18n } = await import("../src/i18n");
++    expect(i18n.t("videoWorkbench.resumeTask", { lng: "zh-CN" })).toBe("继续查询");
++    expect(i18n.t("videoWorkbench.resumeTask", { lng: "en-US" })).toBe("Resume task");
++    expect(i18n.t("videoWorkbench.taskStillPending", { lng: "zh-CN" })).toContain("原任务");
++    expect(i18n.t("videoWorkbench.taskStillPending", { lng: "en-US" })).toContain("existing task");
++});

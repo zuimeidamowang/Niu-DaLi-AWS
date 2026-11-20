@@ -153,13 +153,12 @@ describe('Niu Dali storefront primary action', () => {
     }
   )
 
-  it('offers no docs action even when a docs link is configured', async () => {
+  it('takes visitors to the local API documentation even when an external docs link is configured', async () => {
     renderStorefront(false, { docs_link: 'https://docs.example.com' })
 
-    await screen.findAllByRole('button', { name: /View Pricing/i })
     expect(
-      screen.queryByRole('button', { name: /Docs/i })
-    ).not.toBeInTheDocument()
+      await screen.findByRole('button', { name: 'API documentation' })
+    ).toHaveAttribute('href', '/docs')
   })
 
   it('sends an authenticated user to the wallet', async () => {

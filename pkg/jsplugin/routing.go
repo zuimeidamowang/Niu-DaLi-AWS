@@ -218,6 +218,7 @@ const (
 	ContextKeyPinnedEndpoint  = "task_plugin_pinned_endpoint"
 	ContextKeyRouteRequest    = "task_plugin_route_request"
 	ContextKeyProtocolRequest = "task_plugin_protocol_request"
+	ContextKeyMediaAssetIDs   = "task_plugin_media_asset_ids"
 )
 
 type PinnedPlugin struct {
@@ -286,6 +287,7 @@ type RouteRequestContext struct {
 	Params      map[string]string   `json:"params"`
 	Query       map[string][]string `json:"query"`
 	Body        any                 `json:"body"`
+	Assets      map[string]any      `json:"-"`
 	Files       []map[string]any    `json:"-"`
 	RequestBody any                 `json:"-"`
 }
@@ -297,13 +299,17 @@ func (r RouteRequestContext) JSValue() map[string]any {
 	for key, values := range r.Query {
 		query[key] = append([]string(nil), values...)
 	}
-	return map[string]any{
+	value := map[string]any{
 		"path":   r.Path,
 		"method": r.Method,
 		"params": params,
 		"query":  query,
 		"body":   clonePluginRequestValue(r.Body),
 	}
+	if len(r.Assets) > 0 {
+		value["assets"] = clonePluginRequestValue(r.Assets)
+	}
+	return value
 }
 
 func clonePluginRequestValue(value any) any {

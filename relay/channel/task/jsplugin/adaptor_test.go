@@ -2035,3 +2035,36 @@ func TestTaskAdaptorChainsSunoBatchFetchThroughNewAPIUpstream(t *testing.T) {
 	assert.Equal(t, "SUCCESS", results["task_up_public"].TaskInfo.Status)
 	assert.Equal(t, []string{"POST /suno/submit/MUSIC", "POST /suno/fetch"}, seen)
 }
+
+func TestTaskAdaptorRedactsMediaSourceEchoBeforePersistingTaskData(t *testing.T) {
+	plugin, found := pluginruntime.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	const modelName = "doubao-seedance-2-5"
+	source := "https://platform.example/v1/media/assets/media_" + strings.Repeat("a", 32) + "/source?expires=123&signature=secret-capability"
+	for _, status := range []string{"queued", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/videos", strings.NewReader(`{}`))
+			c.Set("task_request", map[string]any{"model": modelName, "prompt": "a cat", "duration": 6, "resolution": "720p"})
+			info := &relaycommon.RelayInfo{OriginModelName: modelName, ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://routek.ai", UpstreamModelName: modelName}, TaskRelayInfo: &relaycommon.TaskRelayInfo{PublicTaskID: "task_public"}}
+			adaptor := New(plugin)
+			adaptor.Init(info)
+			body, err := common.Marshal(map[string]any{"id": "upstream", "status": status, "input": map[string]any{"url": source}, "error": map[string]any{"message": "Cannot fetch " + source}, "usage": map[string]any{"total_tokens": 123}, "video_url": "https://cdn.example/result.mp4?signature=output-token"})
+			require.NoError(t, err)
+			parsed, taskErr := adaptor.ParseResponse(c, &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(bytes.NewReader(body))}, info)
+			require.Nil(t, taskErr)
+			require.NotNil(t, parsed)
+			assert.NotContains(t, string(parsed.TaskData), "secret-capability")
+			assert.Contains(t, string(parsed.TaskData), "[media source redacted]")
+			assert.Contains(t, string(parsed.TaskData), "output-token")
+			var data map[string]any
+			require.NoError(t, common.Unmarshal(parsed.TaskData, &data))
+			assert.Equal(t, float64(123), data["usage"].(map[string]any)["total_tokens"])
+			if status == "failed" {
+				require.NotNil(t, parsed.Immediate)
+				assert.NotContains(t, parsed.Immediate.Reason, "secret-capability")
+				assert.Contains(t, parsed.Immediate.Reason, "[media source redacted]")
+			}
+		})
+	}
+}

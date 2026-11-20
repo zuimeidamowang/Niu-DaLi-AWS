@@ -36,7 +36,9 @@ func SetUpLogger(server *gin.Engine) {
 		path := param.Path
 		// OAuth callbacks carry one-time codes and state in the query string.
 		// Redact the log value only; the handler still needs the original query.
-		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") {
+		requestPath, _, _ := strings.Cut(path, "?")
+		isMediaAsset := strings.HasPrefix(requestPath, "/v1/media/assets/")
+		if strings.HasPrefix(path, "/api/oauth/") || strings.HasPrefix(path, "/oauth/") || isMediaAsset {
 			path, _, _ = strings.Cut(path, "?")
 		}
 		return fmt.Sprintf("[GIN] %s | %s | %s | %3d | %13v | %15s | %7s %s\n",

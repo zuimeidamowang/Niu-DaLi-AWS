@@ -17,31 +17,38 @@ if [ "$actual_revision" != "$expected_revision" ]; then
     exit 1
 fi
 
-seedance_patch="$integration_dir/seedance.patch"
+media_patch="$integration_dir/media-assets.patch"
 subpath_patch="$integration_dir/subpath.patch"
 
-# The three patches stack: seedance.patch edits files defaults.patch already touched,
-# subpath.patch comes last. So "is it applied?" can only be asked of the last patch in
-# the stack. Check that first, then require a pristine tree at the pinned revision —
-# a half-applied tree cannot be detected by reverse-checking the earlier patches and
-# would otherwise fail deep inside `git apply` with unreadable messages.
+if git -C "$canvas_dir" apply --reverse --check "$media_patch" 2>/dev/null; then
+    echo "Gateway defaults, Seedance, sub-path and unified media support are already applied."
+    exit 0
+fi
+
+# Upgrade an existing three-patch installation without resetting local work.
+# git apply checks every hunk first and refuses conflicts before changing files.
 if git -C "$canvas_dir" apply --reverse --check "$subpath_patch" 2>/dev/null; then
-    echo "Gateway defaults, Seedance integration and sub-path support are already applied."
+    git -C "$canvas_dir" apply --check "$media_patch"
+    git -C "$canvas_dir" apply "$media_patch"
+    echo "Unified media support applied to the existing canvas integration. Rebuild before deployment."
     exit 0
 fi
 
 if [ -n "$(git -C "$canvas_dir" status --porcelain)" ]; then
-    echo "$canvas_dir is not clean at $expected_revision." >&2
-    echo "Reset it first (git -C $canvas_dir checkout -- . && git -C $canvas_dir clean -fd)" >&2
-    echo "and rerun this script from the pristine revision." >&2
+    echo "$canvas_dir is not a pristine or recognized integrated checkout at $expected_revision." >&2
+    echo "Use a separate clean checkout at the pinned revision; preserve your current changes." >&2
     exit 1
 fi
 
-patch_file="$integration_dir/defaults.patch"
-git -C "$canvas_dir" apply --check "$patch_file"
-git -C "$canvas_dir" apply "$patch_file"
-git -C "$canvas_dir" apply --check "$seedance_patch"
-git -C "$canvas_dir" apply "$seedance_patch"
-git -C "$canvas_dir" apply --check "$subpath_patch"
-git -C "$canvas_dir" apply "$subpath_patch"
-echo "Gateway defaults, Seedance integration and /canvas/ sub-path support applied. Rebuild the canvas before deployment."
+# Preflight the whole dependent stack in a disposable index before any writes.
+media_index=$(mktemp)
+rm "$media_index"
+trap 'rm -f "$media_index"' EXIT HUP INT TERM
+GIT_INDEX_FILE="$media_index" git -C "$canvas_dir" read-tree HEAD
+for patch_name in defaults seedance subpath media-assets; do
+    GIT_INDEX_FILE="$media_index" git -C "$canvas_dir" apply --cached "$integration_dir/$patch_name.patch"
+done
+for patch_name in defaults seedance subpath media-assets; do
+    git -C "$canvas_dir" apply "$integration_dir/$patch_name.patch"
+done
+echo "Gateway defaults, Seedance, /canvas/ sub-path and unified media support applied. Rebuild before deployment."

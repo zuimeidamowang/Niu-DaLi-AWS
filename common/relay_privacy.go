@@ -259,7 +259,7 @@ func PublicRelaySSE(frame []byte, requestID string, redactErrors bool) []byte {
 // are applied separately; an upstream must not overwrite them.
 func RelayProtocolHeader(name string) bool {
 	switch http.CanonicalHeaderKey(name) {
-	case "Content-Type", "Content-Disposition", "Content-Encoding", "Cache-Control", "Expires", "Last-Modified", "Etag", "Retry-After", "Content-Range", "Accept-Ranges", "X-Accel-Buffering", "X-Reasoning-Included", "X-Codex-Turn-State":
+	case "Content-Type", "Content-Disposition", "Content-Encoding", "Cache-Control", "Expires", "Last-Modified", "Etag", "Retry-After", "Content-Range", "Accept-Ranges", "X-Content-Type-Options", "Referrer-Policy", "X-Accel-Buffering", "X-Reasoning-Included", "X-Codex-Turn-State":
 		return true
 	}
 	return false

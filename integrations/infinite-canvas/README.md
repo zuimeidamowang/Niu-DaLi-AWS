@@ -2,6 +2,16 @@
 
 配套画布仓库：`https://github.com/basketikun/infinite-canvas.git`，固定提交 `dab19adc0847e32e39b7fc8ff90cb392561fb826`（v0.19.0）。画布独立运行；本目录保存默认配置补丁，不包含完整画布源码。
 
+## 本站统一图片与视频素材接口
+
+`media-assets.patch` 在原有 `defaults → seedance → subpath` 之后应用。用户使用自己的本站 Key，本地文件以 `POST /v1/media/assets` 上传，生成通过 `/v1/videos` 的 `media: [{asset_id, role}]` 引用；浏览器不会取得 Routek 上传凭证。原始素材未使用时保留 24 小时，使用后在最后一个关联任务结束 24 小时后清理。默认图片 50 MiB、视频 500 MiB、每账号 5 GiB，由服务端配置。
+
+本站的 `doubao-seedance-2-0 / fast / mini / 2-5`（含已发布带日期模型）、`sd-2.5-ch4` 和 `SD2.0满血稳定933` 自动使用该契约。其他支持统一素材的模型，在渠道「视频接入方式」选择「本站素材上传」即可；模型字段及供应商转换由服务端插件处理。自定义脚本仍优先，其他渠道继续沿用原调用方式。参考视频使用参考模式，首尾帧按图片顺序指定，不能混用。
+
+视频工作台新增本地参考视频选择、预览、排序、删除与历史恢复；画布已连接的图片和视频走同一上传接口。图片数量和视频参数由模型验证，不自动提高用户选择的清晰度或改变模型。只连素材时补默认提示词。全部上传成功后只发送一次生成请求；查询等待完成后经本站带鉴权的 content 接口下载。
+
+脚本支持固定版本的干净首次安装，也支持从原有三个补丁升级，冲突时拒绝覆盖，不要求清空用户工作区。重复执行幂等。原始画布项目仍主要保存在浏览器，素材上传不表示整份画布已云同步。网关须配置私有 S3 与新的 `media-assets@1` 插件；现网发布步骤见 [部署说明](../../docs/media-assets-deployment.md)。当前功能尚未发布。2026-11-21 已通过本地独立网关连接真实 Routek 的图片首帧与视频参考生成、查询和下载验收，画布验证视频参考播放及历史恢复；真实 AWS IAM/S3 和生产 500 MiB 上传链路仍需发布前验收。本站任务等待或下载中断后可继续查询原任务，避免重复生成。
+
 ## 首次访问自动配置
 
 运行环境需有 Bun 和 Node.js 20.19+ 或 22.12+。在画布构建前应用补丁：
@@ -17,7 +27,7 @@ bun run typecheck
 bun run dev --port 3001 --strictPort
 ```
 
-脚本校验固定版本与工作区是否干净、检查补丁是否可应用，并支持重复执行。发布时在同一 `web/` 目录运行 `bun run build`，部署生成的 `dist/`。仅部署主项目不会自动更新独立画布网站。
+脚本校验固定版本，在临时索引预检补丁栈，支持从已识别的旧补丁栈升级和重复执行。发布时在同一 `web/` 目录运行 `bun run build`，部署生成的 `dist/`。仅部署主项目不会自动更新独立画布网站。
 
 首次访问默认渠道的 Base URL 为 `https://www.daliniuai.com`，模型目录请求为 `https://www.daliniuai.com/v1/models`。Base URL 不应填写完整的 `/v1/models`，否则生成接口会拼接到错误路径。API Key 留空，由每位用户填写自己的 Key。
 
@@ -42,7 +52,7 @@ SPA 路由仍需补丁，否则应用内所有 `<Link to="/video">` 会解析成
 > bundle 里 `createBrowserRouter([...])` 调用**没有第二参数**（无 `basename`），
 > 于是 `/canvas/` 下点击「视频创作台」跳到 `/video`，刷新即 404。
 > 重新发布画布时务必确认 `apply-defaults.sh` 输出
-> `Gateway defaults, Seedance integration and /canvas/ sub-path support applied.`。
+> `Gateway defaults, Seedance, /canvas/ sub-path and unified media support applied.`。
 
 默认注册目录中已确认的四个视频模型：`Sd-2.0fast`、`Sd-2.0满血933`、`Sd-2.5`、`minmax-h3`，默认选择 `Sd-2.0fast`、4 秒、720p、16:9、参考模式。这些模型显式标记为视频，避免按名称误判为文本。当前目录未返回图像、文本或音频模型，因此不预选这些能力的模型；不同 Key 的实际模型权限可能不同，可在渠道编辑器中重新获取目录。
 
@@ -94,7 +104,7 @@ SPA 路由仍需补丁，否则应用内所有 `<Link to="/video">` 会解析成
 
 ## 88API Seedance 多素材内置接入
 
-新增 `seedance.patch`，由 `apply-defaults.sh` 在默认补丁后应用。三个补丁是**层叠**的（`seedance.patch` 改的文件 `defaults.patch` 已经改过，`subpath.patch` 在最后），所以「是否已应用」只能问栈里最后一个补丁：脚本先反向检出 `subpath.patch`，命中就幂等退出；否则要求工作区在固定修订上**干净**，再从 `defaults → seedance → subpath` 依次应用。半应用状态无法被反向检出，脚本会明确报错并提示 reset，而不是抛一串裸 `git apply` 失败。
+新增 `seedance.patch`，由 `apply-defaults.sh` 在默认补丁后应用。补丁按 `defaults → seedance → subpath → media-assets` 层叠。脚本先识别最终素材补丁以幂等退出；识别原有 `subpath` 栈后仅追加素材补丁，否则从干净固定版本预检并完整应用。半应用或冲突状态会拒绝覆盖，请使用独立干净 checkout。
 
 网关需运行 `88api-seedance` 1.1.0 与本次 `/v1/media/uploads` 上传凭证接口。专用渠道类型为 New API，绑定该插件，Base URL 为 `https://api.88api.ai`；上游 Key 只保存在该渠道。用户画布配置本地 `http://localhost:3002` 或已升级的 HTTPS 网关及用户网关 Key，模型能力选择“视频”，清空旧手册的单图自定义脚本并保存外层渠道。“视频接入方式”按地址自动判定（见下节），一般不需要手动改。不要覆盖整份浏览器配置；自定义脚本仍优先于内置请求。
 

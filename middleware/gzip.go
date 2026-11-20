@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/andybalholm/brotli"
 	"github.com/gin-gonic/gin"
 	"github.com/klauspost/compress/zstd"
@@ -34,6 +35,11 @@ func DecompressRequestMiddleware() gin.HandlerFunc {
 			maxMB = 32
 		}
 		maxBytes := int64(maxMB) << 20
+		if c.Request.Method == http.MethodPost && c.Request.URL.Path == "/v1/media/assets" {
+			if storage := service.GetMediaAssetService(); storage.Enabled() {
+				maxBytes = storage.MaxUploadBytes() + (1 << 20)
+			}
+		}
 
 		origBody := c.Request.Body
 		wrapMaxBytes := func(body io.ReadCloser) io.ReadCloser {

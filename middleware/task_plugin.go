@@ -118,6 +118,16 @@ func PrepareTaskPluginRoute() gin.HandlerFunc {
 			return
 		}
 
+		if err := resolveTaskPluginMedia(c, &requestContext); err != nil {
+			abortTaskPluginRouteErrorDetail(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(requestContext.Assets) > 0 && !slices.Contains(pinned.Plugin.Meta.RequiredCapabilities, pluginruntime.CapabilityMediaAssets) {
+			abortTaskPluginRouteErrorDetail(c, http.StatusBadRequest, "this channel plugin does not support media assets")
+			return
+		}
+		c.Set(pluginruntime.ContextKeyRouteRequest, requestContext)
+
 		if len(pinned.Route.Models) > 0 {
 			bodyValue, _ := bodyObject["value"].(map[string]any)
 			claimedModel, _ := bodyValue["model"].(string)
@@ -595,6 +605,10 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 				}
 			}
 		}
+		if err := resolveTaskPluginMedia(c, &requestContext); err != nil {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, err.Error())
+			return
+		}
 		protocolContext := pluginruntime.ProtocolRequestContext{
 			RouteRequestContext: requestContext,
 			Protocol:            pinned.Protocol,
@@ -618,10 +632,16 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 			candidateContext.Operation = candidate.Operation.Name
 			// Parsing belongs to durable submission; disconnecting only stops
 			// the later Responses observation.
-			resolvedValue, callErr := candidate.Plugin.Engine.CallPathWithAdmissionTimeout(
-				context.WithoutCancel(c.Request.Context()), pluginruntime.DefaultCallTimeout,
-				"protocols", []string{candidate.Protocol, "decodeRequest"}, candidateContext.JSValue(),
-			)
+			var resolvedValue any
+			var callErr error
+			if len(requestContext.Assets) > 0 && !slices.Contains(candidate.Plugin.Meta.RequiredCapabilities, pluginruntime.CapabilityMediaAssets) {
+				callErr = errors.New("this channel plugin does not support media assets")
+			} else {
+				resolvedValue, callErr = candidate.Plugin.Engine.CallPathWithAdmissionTimeout(
+					context.WithoutCancel(c.Request.Context()), pluginruntime.DefaultCallTimeout,
+					"protocols", []string{candidate.Protocol, "decodeRequest"}, candidateContext.JSValue(),
+				)
+			}
 			result, resultOK := resolvedValue.(map[string]any)
 			detail := ""
 			reason := ""
@@ -732,6 +752,68 @@ func PrepareTaskPluginEndpoint() gin.HandlerFunc {
 		)
 		c.Next()
 	}
+}
+
+// resolveTaskPluginMedia keeps storage credentials and transport URLs out of
+// the public request while exposing only owner-checked, request-scoped assets.
+func resolveTaskPluginMedia(c *gin.Context, request *pluginruntime.RouteRequestContext) error {
+	body, _ := request.Body.(map[string]any)
+	var raw any
+	var present bool
+	if value, ok := body["value"].(map[string]any); ok {
+		raw, present = value["media"]
+	} else if fields, ok := body["fields"].(map[string][]string); ok {
+		if values, exists := fields["media"]; exists {
+			present = true
+			if len(values) != 1 || common.UnmarshalJsonStr(values[0], &raw) != nil {
+				return errors.New("media must contain one JSON array")
+			}
+		}
+	}
+	if !present {
+		return nil
+	}
+	items, ok := raw.([]any)
+	if !ok || len(items) == 0 || len(items) > maxTaskPluginFiles {
+		return fmt.Errorf("media must contain between 1 and %d assets", maxTaskPluginFiles)
+	}
+	ids := make([]string, 0, len(items))
+	roles := make(map[string][]string, len(items))
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if !ok || len(entry) != 2 {
+			return errors.New("each media entry requires only asset_id and role")
+		}
+		id, idOK := entry["asset_id"].(string)
+		role, roleOK := entry["role"].(string)
+		if !idOK || id == "" || strings.TrimSpace(id) != id || !roleOK {
+			return errors.New("each media entry requires asset_id and role")
+		}
+		switch role {
+		case "first_frame", "last_frame", "reference_image", "reference_video":
+		default:
+			return errors.New("unsupported media role")
+		}
+		if _, exists := roles[id]; !exists {
+			ids = append(ids, id)
+		}
+		roles[id] = append(roles[id], role)
+	}
+	assets, err := service.ResolveMediaAssets(context.WithoutCancel(c.Request.Context()), common.GetContextKeyInt(c, constant.ContextKeyUserId), ids)
+	if err != nil {
+		return errors.New("media asset is unavailable or not owned by this account")
+	}
+	request.Assets = make(map[string]any, len(assets))
+	for id, asset := range assets {
+		for _, role := range roles[id] {
+			if role == "reference_video" && asset.Type != "video" || role != "reference_video" && asset.Type != "image" {
+				return errors.New("media role does not match the uploaded file type")
+			}
+		}
+		request.Assets[id] = map[string]any{"type": asset.Type, "mimeType": asset.MIMEType, "size": asset.Size, "url": asset.URL, "fileRef": asset.FileRef}
+	}
+	c.Set(pluginruntime.ContextKeyMediaAssetIDs, ids)
+	return nil
 }
 
 func buildTaskPluginRouteRequest(c *gin.Context) (pluginruntime.RouteRequestContext, error) {
@@ -1443,6 +1525,18 @@ func PrepareTaskPluginSubmit() gin.HandlerFunc {
 				requestBody["model"] = folded
 				modelName = folded
 			}
+		}
+		requestContext := pluginruntime.RouteRequestContext{Body: map[string]any{"kind": "json", "value": requestBody}, RequestBody: requestBody}
+		if err := resolveTaskPluginMedia(c, &requestContext); err != nil {
+			abortWithOpenAiMessage(c, http.StatusBadRequest, err.Error())
+			return
+		}
+		if len(requestContext.Assets) > 0 {
+			if !slices.Contains(plugin.Meta.RequiredCapabilities, pluginruntime.CapabilityMediaAssets) {
+				abortWithOpenAiMessage(c, http.StatusBadRequest, "this channel plugin does not support media assets")
+				return
+			}
+			c.Set(pluginruntime.ContextKeyRouteRequest, requestContext)
 		}
 		c.Set("task_request", requestBody)
 		c.Set("resolved_task_model", modelName)

@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -213,6 +214,13 @@ func RelayTaskSubmit(c *gin.Context, info *relaycommon.RelayInfo) (*TaskSubmitRe
 	// contract exposes this host-generated id to that hook.
 	if info.PublicTaskID == "" {
 		info.PublicTaskID = model.GenerateTaskID()
+	}
+	if assetValue, exists := c.Get(jsplugin.ContextKeyMediaAssetIDs); exists {
+		if ids, ok := assetValue.([]string); ok && len(ids) > 0 {
+			if err := service.LeaseMediaAssets(context.WithoutCancel(c.Request.Context()), info.UserId, info.PublicTaskID, ids); err != nil {
+				return nil, service.TaskErrorWrapperLocal(errors.New("media asset is unavailable or not owned by this account"), "media_asset_unavailable", http.StatusBadRequest)
+			}
+		}
 	}
 	adaptor.Init(info)
 	// Plugin submit hooks run during ValidateRequestAndSetAction and cache the
