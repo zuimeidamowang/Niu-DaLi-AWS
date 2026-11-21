@@ -189,6 +189,7 @@ type AuthMeta struct {
 type UsageFieldSchema struct {
 	Type        string                   `json:"type,omitempty"`
 	Unit        string                   `json:"unit,omitempty"`
+	Aggregate   bool                     `json:"aggregate,omitempty"`
 	UnitLabel   LocalizedText            `json:"unitLabel,omitempty"`
 	Enum        []string                 `json:"enum,omitempty"`
 	Description LocalizedText            `json:"description,omitempty"`
@@ -1501,7 +1502,7 @@ func decodeUsageSchema(value any) (map[string]UsageFieldSchema, error) {
 		}
 		for key := range fieldObject {
 			switch key {
-			case "type", "unit", "unitLabel", "enum", "description", "enumLabels":
+			case "type", "unit", "aggregate", "unitLabel", "enum", "description", "enumLabels":
 			default:
 				return nil, fmt.Errorf("plugin meta usageSchema field %q has unknown property %q", name, key)
 			}
@@ -1513,6 +1514,12 @@ func decodeUsageSchema(value any) (map[string]UsageFieldSchema, error) {
 		}
 		if field.Unit, err = stringMetaField(fieldObject, "unit"); err != nil {
 			return nil, err
+		}
+		if aggregate, exists := fieldObject["aggregate"]; exists {
+			if enabled, ok := aggregate.(bool); !ok || !enabled {
+				return nil, fmt.Errorf("plugin meta usageSchema field %q aggregate must be true when declared", name)
+			}
+			field.Aggregate = true
 		}
 		if field.UnitLabel, err = localizedTextMetaField(fieldObject, "unitLabel", maxUsageFieldDescriptionRunes); err != nil {
 			return nil, err
@@ -1548,6 +1555,9 @@ func decodeUsageSchema(value any) (map[string]UsageFieldSchema, error) {
 }
 
 func validateUsageFieldSchema(name string, field UsageFieldSchema) error {
+	if field.Aggregate && (field.Type != "number" || field.Unit != "second" || field.Enum != nil) {
+		return fmt.Errorf("plugin meta usageSchema field %q aggregate requires a number field with second unit", name)
+	}
 	if field.UnitLabel != nil {
 		if field.Type != "number" || field.Unit != "count" || field.Enum != nil {
 			return fmt.Errorf("plugin meta usageSchema field %q unitLabel requires a number field with count unit", name)
@@ -1725,7 +1735,9 @@ func validateUsageExampleValue(value any, field UsageFieldSchema) error {
 	limit := float64(relaycommon.MaxTaskDurationSeconds)
 	if field.Unit == "count" {
 		limit = float64(dto.MaxImageN)
-	} else if field.Unit == "token" || field.Unit == "credit" {
+	} else if field.Unit == "token" || field.Unit == "credit" || field.Aggregate {
+		// Aggregate examples share the monetary smoke-test scale. This is a
+		// metadata bound, not a runtime cap on cumulative billing seconds.
 		limit = float64(common.MaxQuota)
 	}
 	if number > limit {

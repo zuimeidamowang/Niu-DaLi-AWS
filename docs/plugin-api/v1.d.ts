@@ -48,10 +48,12 @@ export type ProtocolClaim =
 export type ImageResponseEntry = {url?: string; b64_json?: string; revised_prompt?: string};
 export type LocalizedText = string | ({ en: string } & Record<string, string>);
 export type UsageFieldSchema =
-  | {type: "number"; unit: "count"; unitLabel?: LocalizedText; description?: LocalizedText}
-  | {type: "number"; unit: "second" | "token" | "credit"; unitLabel?: never; description?: LocalizedText}
-  | {type: "boolean"; unitLabel?: never; description?: LocalizedText}
-  | {enum: readonly string[]; unitLabel?: never; description?: LocalizedText; enumLabels?: Readonly<Record<string, LocalizedText>>};
+  | {type: "number"; unit: "count"; aggregate?: never; unitLabel?: LocalizedText; description?: LocalizedText}
+  /** Cumulative standard billing seconds; aggregate never relaxes request duration limits. */
+  | {type: "number"; unit: "second"; aggregate?: true; unitLabel?: never; description?: LocalizedText}
+  | {type: "number"; unit: "token" | "credit"; aggregate?: never; unitLabel?: never; description?: LocalizedText}
+  | {type: "boolean"; aggregate?: never; unitLabel?: never; description?: LocalizedText}
+  | {enum: readonly string[]; aggregate?: never; unitLabel?: never; description?: LocalizedText; enumLabels?: Readonly<Record<string, LocalizedText>>};
 export type UsageExample = {label: string; facts: Readonly<Record<string, string | number | boolean>>};
 export type UsageProfile = {models: readonly string[]; schema: Readonly<Record<string, UsageFieldSchema>>; examples?: readonly UsageExample[]};
 export interface Meta {requiredCapabilities?: readonly HostCapability[]; submitResponseTypes?: readonly ("json" | "sse")[]; sortPriority?: number; website?: string; apiVersion: 1; key: string; name: string; icon?: string; description?: LocalizedText; version: string; author: {name: string; url?: string}; baseUrl?: string; channelTypes?: readonly number[]; models: readonly string[]; fetchMode: "per_task" | "batch"; allowedHosts?: readonly string[]; upstreams?: readonly UpstreamKind[]; routes?: readonly NativeRoute[]; protocols?: readonly ProtocolClaim[]; usageSchema?: Readonly<Record<string, UsageFieldSchema>>; usageExamples?: readonly UsageExample[]; usageProfiles?: readonly UsageProfile[]; auth?: "none" | "api_key" | "vertex_oauth" | {type: "none" | "api_key" | "oauth2_jwt"}}

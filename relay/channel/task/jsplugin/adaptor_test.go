@@ -1015,6 +1015,125 @@ export function extractUsageOnComplete() { return {units: 3.5}; }
 		ratios := adaptor.AdjustBillingOnSubmit(info, []byte(`{"usage":{"duration":1000000000000000}}`))
 		assert.Nil(t, ratios)
 	})
+
+	t.Run("declared token count retains its unit despite canonical field name", func(t *testing.T) {
+		tokenCountSource := strings.Replace(source, `count: {type: "number", unit: "count"}`, `count: {type: "number", unit: "token"}`, 1)
+		tokenCountPlugin, err := pluginruntime.NewRegistry().Register(tokenCountSource, pluginruntime.Options{})
+		require.NoError(t, err)
+		_, c, info := newRequest(t, map[string]any{"count": 500000})
+		adaptor := New(tokenCountPlugin)
+		adaptor.Init(info)
+		require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info), "a declared token field must not acquire the image-count ceiling")
+	})
+}
+
+func TestTaskAdaptorAggregateSecondsPreserveQuantityAndMonetaryBounds(t *testing.T) {
+	source := `
+export const meta = {
+  apiVersion: 1, key: "aggregate-seconds", name: "Aggregate Seconds", version: "1.0.0",
+  author: {name: "Test"}, models: ["model"], fetchMode: "per_task",
+  usageSchema: {
+    duration: {type: "number", unit: "second"},
+    seconds: {type: "number", unit: "second", aggregate: true},
+    billable_seconds: {type: "number", unit: "second", aggregate: true},
+  },
+};
+export function buildSubmitRequest(ctx) { return {url: ctx.baseUrl + "/submit", method: "POST", body: {}}; }
+export function parseSubmitResponse() { return {taskId: "upstream"}; }
+export function buildQueryRequest() { return {url: "https://provider.example/task"}; }
+export function parseTaskResult() { return {status: "SUCCESS"}; }
+function billingFacts(body) {
+  const invalid = {negative: -1, nan: NaN, infinity: Infinity};
+  return {billable_seconds: body.invalid ? invalid[body.invalid] : body.quantity};
+}
+export function extractUsage(ctx) { return billingFacts(ctx.requestBody); }
+export function extractUsageOnComplete(ctx, result, body) { return billingFacts(body); }
+`
+	plugin, err := pluginruntime.NewRegistry().Register(source, pluginruntime.Options{})
+	require.NoError(t, err)
+	newRequest := func(t *testing.T, body map[string]any) (*TaskAdaptor, *gin.Context, *relaycommon.RelayInfo) {
+		t.Helper()
+		adaptor := New(plugin)
+		info := &relaycommon.RelayInfo{ChannelMeta: &relaycommon.ChannelMeta{ChannelBaseUrl: "https://provider.example", UpstreamModelName: "model"}, OriginModelName: "model", TaskRelayInfo: &relaycommon.TaskRelayInfo{}}
+		adaptor.Init(info)
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/native/submit", nil)
+		c.Set("task_request", body)
+		return adaptor, c, info
+	}
+
+	for _, tc := range []struct {
+		name      string
+		quantity  float64
+		wantQuota int
+		wantClamp bool
+	}{
+		{name: "aggregate seconds exceed a physical duration", quantity: 3601.25, wantQuota: 900312500},
+		{name: "raw fractional quantity exceeds integer quota ceiling", quantity: float64(common.MaxQuota) + 0.75, wantQuota: common.MaxQuota, wantClamp: true},
+		{name: "largest finite quantity preserves serializable saturation audit", quantity: math.MaxFloat64, wantQuota: common.MaxQuota, wantClamp: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"quantity": tc.quantity}
+			adaptor, c, info := newRequest(t, body)
+			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.NoError(t, err)
+			assert.Equal(t, tc.quantity, facts["billable_seconds"], "usage must not be duration-capped or integer-rounded")
+			encoded, err := common.Marshal(body)
+			require.NoError(t, err)
+			completed, err := adaptor.ParseTaskResult(&model.Task{Properties: model.Properties{OriginModelName: "model", UpstreamModelName: "model"}}, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, encoded)
+			require.NoError(t, err)
+			require.NotNil(t, completed)
+			assert.Equal(t, tc.quantity, completed.UsageFacts["billable_seconds"], "completion retains raw usage until monetary conversion")
+			expression := `tier("standard", u("billable_seconds") * 0.5)`
+			charge, err := billingexpr.ComputeTieredQuotaWithRequest(&billingexpr.BillingSnapshot{ExprString: expression, ExprHash: billingexpr.ExprHashString(expression), GroupRatio: 1, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true}, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: completed.UsageFacts})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota, charge.ActualQuotaAfterGroup)
+			assert.GreaterOrEqual(t, charge.ActualQuotaAfterGroup, 0)
+			if tc.wantClamp {
+				require.NotNil(t, charge.Clamp, "monetary saturation must carry an audit marker")
+				audit := charge.Clamp.AuditMap()
+				_, err := common.Marshal(audit)
+				require.NoError(t, err, "monetary saturation must not discard the billing audit")
+				if tc.quantity == math.MaxFloat64 {
+					assert.Equal(t, "+Inf", audit["original"])
+				} else {
+					assert.IsType(t, float64(0), audit["original"], "finite audit quantities retain numeric semantics")
+				}
+			} else {
+				assert.Nil(t, charge.Clamp)
+			}
+		})
+	}
+
+	for _, invalid := range []string{"negative", "nan", "infinity"} {
+		t.Run("reject "+invalid+" aggregate usage", func(t *testing.T) {
+			body := map[string]any{"invalid": invalid}
+			adaptor, c, info := newRequest(t, body)
+			require.Nil(t, adaptor.ValidateRequestAndSetAction(c, info))
+			facts, err := adaptor.ExtractUsageFactsValidated(c, info)
+			require.Error(t, err)
+			assert.Nil(t, facts)
+			encoded, err := common.Marshal(body)
+			require.NoError(t, err)
+			completed, err := adaptor.ParseTaskResult(&model.Task{Properties: model.Properties{OriginModelName: "model", UpstreamModelName: "model"}}, &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}, encoded)
+			require.NoError(t, err)
+			require.NotNil(t, completed)
+			assert.Nil(t, completed.UsageFacts, "invalid measured usage must not replace a valid reservation with zero")
+		})
+	}
+
+	for _, body := range []map[string]any{
+		{"quantity": 1, "seconds": relaycommon.MaxTaskDurationSeconds + 1},
+		{"quantity": 1, "metadata": map[string]any{"seconds": relaycommon.MaxTaskDurationSeconds + 1}},
+	} {
+		t.Run("aggregate declaration cannot bypass request duration validation", func(t *testing.T) {
+			adaptor, c, info := newRequest(t, body)
+			taskErr := adaptor.ValidateRequestAndSetAction(c, info)
+			require.NotNil(t, taskErr)
+			assert.Equal(t, "plugin_usage_invalid", taskErr.Code)
+		})
+	}
 }
 
 func TestTaskAdaptorSeparatesExpressionFactsFromLegacyBillingRatios(t *testing.T) {

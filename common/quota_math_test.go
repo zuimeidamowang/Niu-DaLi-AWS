@@ -82,6 +82,31 @@ func TestQuotaFromFloatChecked(t *testing.T) {
 	}
 }
 
+func TestQuotaClampAuditMapSerializesNonFiniteOriginal(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		original     float64
+		kind         QuotaClampKind
+		clamped      int
+		wantOriginal any
+		wantJSON     string
+	}{
+		{"positive infinity", math.Inf(1), QuotaClampOverflow, MaxQuota, "+Inf", `"+Inf"`},
+		{"negative infinity", math.Inf(-1), QuotaClampUnderflow, MinQuota, "-Inf", `"-Inf"`},
+		{"not a number", math.NaN(), QuotaClampNaN, 0, "NaN", `"NaN"`},
+		{"finite fraction", float64(MaxQuota) + 42.25, QuotaClampOverflow, MaxQuota, float64(MaxQuota) + 42.25, `2147483689.25`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clamp := &QuotaClamp{Op: "QuotaRound", Kind: tc.kind, Original: tc.original, Clamped: tc.clamped}
+			audit := clamp.AuditMap()
+			encoded, err := Marshal(audit)
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantOriginal, audit["original"])
+			assert.JSONEq(t, fmt.Sprintf(`{"op":"QuotaRound","kind":%q,"original":%s,"clamped":%d}`, tc.kind, tc.wantJSON, tc.clamped), string(encoded))
+		})
+	}
+}
+
 func TestQuotaFromFloatStrictReturnsTypedClampError(t *testing.T) {
 	quota, err := QuotaFromFloatStrict(42.9)
 	require.NoError(t, err)

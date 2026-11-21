@@ -55,6 +55,18 @@ describe('public model API documentation', () => {
         level: 1,
       })
     ).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Video billing' })).toBeVisible()
+    expect(
+      screen.getByText(/Seedance prices use standard billable seconds/)
+    ).toHaveTextContent('including reference video processing')
+    expect(
+      screen.getByText(/Creation reserves an estimated charge/)
+    ).toHaveTextContent('additional charge or refund')
+    expect(
+      screen.getByText(/For example, a 6-second output/)
+    ).toHaveTextContent(
+      'not a claim that the reference video lasts 4.0416 seconds'
+    )
     expect(
       screen.getByLabelText('Image upload', { selector: 'pre' })
     ).toHaveTextContent("-F 'file=@reference.jpg'")

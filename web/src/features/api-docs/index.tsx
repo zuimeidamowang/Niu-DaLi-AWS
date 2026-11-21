@@ -73,6 +73,9 @@ export function ApiDocsContent() {
             <a href='#result' className='hover:text-primary'>
               {t('Query and download')}
             </a>
+            <a href='#video-billing' className='hover:text-primary'>
+              {t('Video billing')}
+            </a>
             <a href='#chat' className='hover:text-primary'>
               {t('Chat models')}
             </a>
@@ -131,6 +134,24 @@ export function ApiDocsContent() {
             <p className='text-muted-foreground text-sm leading-7'>
               {t(
                 'Replace VIDEO_ID with the returned id. Query timeouts do not require a new generation request. Download through this API using the same account key.'
+              )}
+            </p>
+          </section>
+          <section id='video-billing' className='scroll-mt-24 space-y-4'>
+            <h2 className='text-2xl font-semibold'>{t('Video billing')}</h2>
+            <p className='text-muted-foreground leading-7'>
+              {t(
+                'Seedance prices use standard billable seconds. They measure model processing, including reference video processing when supplied, and may differ from the output video duration. See Model Square for the rate for your model, resolution and reference mode.'
+              )}
+            </p>
+            <p className='text-muted-foreground leading-7'>
+              {t(
+                'Creation reserves an estimated charge. When generation finishes, actual usage determines the final billable seconds and any additional charge or refund. Usage logs show the output duration and standard billable seconds separately. Repeated task queries do not create another generation charge.'
+              )}
+            </p>
+            <p className='text-muted-foreground text-sm leading-7'>
+              {t(
+                'For example, a 6-second output with a reference video may use 10.0416 standard billable seconds. This is a billing quantity, not a claim that the reference video lasts 4.0416 seconds. Billing keeps full precision until the final amount is rounded.'
               )}
             </p>
           </section>

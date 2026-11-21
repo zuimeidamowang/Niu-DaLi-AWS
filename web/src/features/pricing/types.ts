@@ -32,6 +32,7 @@ export type BillingUsageUnit = 'second' | 'count' | 'token' | 'credit'
 export type BillingUsageFieldSchema = {
   type?: 'number' | 'boolean'
   unit?: BillingUsageUnit
+  aggregate?: true
   unitLabel?: string | Record<string, string>
   enum?: string[]
   enumLabels?: Record<string, string | Record<string, string>>

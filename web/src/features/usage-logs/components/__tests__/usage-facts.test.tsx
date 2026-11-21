@@ -110,6 +110,28 @@ test('shows the recorded request and response models in log details', () => {
 })
 
 describe('usage facts billing details', () => {
+  test('separates output duration from standard seconds including reference processing', () => {
+    const queryClient = renderDetails({
+      billing_mode: 'tiered_expr',
+      expr_b64: btoa('tier("720p", u("billable_seconds") * 0.4968)'),
+      matched_tier: '720p',
+      usage_facts: {
+        seconds: 6,
+        billable_seconds: 216899 / 21600,
+        resolution: '720p',
+        video_input: 'video',
+      },
+    })
+    expect(rowValue('Output video duration (seconds)')).toBe('6')
+    expect(rowValue('Standard billable seconds')).toBe(String(216899 / 21600))
+    expect(rowValue('Reference video processing')).toBe('Included')
+    expect(
+      screen.getByText(/Standard billable seconds measure model processing/)
+    ).toBeVisible()
+    expect(screen.queryByText('Input video duration')).toBeNull()
+    queryClient.clear()
+  })
+
   test('shows the settled image count and a per-image price', () => {
     const queryClient = renderDetails({
       billing_mode: 'tiered_expr',
