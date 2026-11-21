@@ -290,7 +290,9 @@ func taskUsageSmokeVectors(schema map[string]jsplugin.UsageFieldSchema) []map[st
 		if field.Unit == "count" {
 			limit = dto.MaxImageN
 		}
-		if field.Unit == "token" || field.Unit == "credit" {
+		if field.Unit == "token" || field.Unit == "credit" || field.Aggregate {
+			// A representative expression-validation vector, not a runtime
+			// ceiling on cumulative standard billing seconds.
 			limit = common.MaxQuota
 		}
 		dimensions = append(dimensions, usageSmokeDimension{

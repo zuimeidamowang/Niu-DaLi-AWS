@@ -1479,12 +1479,16 @@ func (a *TaskAdaptor) validateResolvedUsageValue(value any, usageSchema map[stri
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, item := range typed {
-			if schema, declared := usageSchema[key]; declared {
-				if _, err := validateUsageValue(item, schema, true); err != nil {
+			schema, declared := usageSchema[key]
+			// A cumulative billing declaration cannot relax physical request
+			// durations. Other declared facts retain their schema's unit.
+			if limit, canonical := canonicalUsageLimit(key); canonical && (limit == relaycommon.MaxTaskDurationSeconds || !declared) {
+				if err := validateUsageLimit(item, limit, true); err != nil {
 					return err
 				}
-			} else if limit, canonical := canonicalUsageLimit(key); canonical {
-				if err := validateUsageLimit(item, limit, true); err != nil {
+			}
+			if declared {
+				if _, err := validateUsageValue(item, schema, true); err != nil {
 					return err
 				}
 			}
@@ -1612,6 +1616,15 @@ func validateUsageValue(value any, schema pluginruntime.UsageFieldSchema, allowN
 	number, ok := usageNumber(value, allowNumericString)
 	if !ok {
 		return 0, fmt.Errorf("plugin usage value must be a number")
+	}
+	if schema.Aggregate {
+		if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
+			return 0, fmt.Errorf("plugin usage value must be a finite non-negative number")
+		}
+		// Cumulative standard billing seconds are not a request duration or
+		// an integer quota. Preserve their fractional quantity; the final
+		// monetary conversion performs saturation and records its audit.
+		return number, nil
 	}
 	if schema.Unit == "token" || schema.Unit == "credit" {
 		if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {

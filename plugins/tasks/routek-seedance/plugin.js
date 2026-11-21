@@ -16,7 +16,26 @@ const MODELS = {
   "SD2.0满血稳定933": { kind: "sd20", resolutions: ["720p"], min: 5, max: 15, seconds: 15 },
 };
 const SECONDS = { type: "number", unit: "second", description: { en: "Video generation unit price", zh: "视频生成单价" } };
+const BILLABLE_SECONDS = { type: "number", unit: "second", aggregate: true, description: { en: "Standard video billing unit price", zh: "标准视频计费单价" } };
 const RESOLUTION = { en: "Output video resolution", zh: "输出视频分辨率" };
+const VIDEO_INPUT = {
+  enum: ["none", "video"],
+  description: { en: "Reference video processing", zh: "参考视频处理" },
+  enumLabels: {
+    none: { en: "Without reference video processing", zh: "不含参考视频处理" },
+    video: { en: "With reference video processing", zh: "含参考视频处理" },
+  },
+};
+// Fixed tier baselines define standard billing seconds independently of the
+// delivered aspect ratio. Multiplying the same baseline into the configured
+// per-second price preserves the upstream token cost without rounding usage.
+const TOKENS_PER_SECOND = { "480p": 854 * 480 * 24 / 1024, "720p": 21600, "1080p": 48600 };
+const ARK_USAGE_FIELDS = { seconds: SECONDS, billable_seconds: BILLABLE_SECONDS, video_input: VIDEO_INPUT };
+const ARK_USAGE_EXAMPLES = [
+  { label: "720p · 6s", facts: { seconds: 6, billable_seconds: 6, resolution: "720p", video_input: "none" } },
+  // Standard billing seconds include all processing, not a physical input duration.
+  { label: "720p · 10 standard seconds · Video reference", facts: { seconds: 6, billable_seconds: 10, resolution: "720p", video_input: "video" } },
+];
 const RATIOS = ["21:9", "16:9", "3:2", "4:3", "1:1", "3:4", "2:3", "9:16"];
 
 export const meta = {
@@ -24,9 +43,9 @@ export const meta = {
   key: "routek-seedance",
   name: "Routek Seedance",
   icon: "text:RK",
-  version: "1.1.0",
+  version: "1.2.0",
   author: { name: "Niu Dali" },
-  description: { en: "Routek Seedance video generation with per-second pricing", zh: "Routek Seedance 视频生成与按秒计费" },
+  description: { en: "Routek Seedance video generation billed in standard seconds including reference processing", zh: "Routek Seedance 视频生成与含参考处理的标准秒计费" },
   baseUrl: "https://routek.ai",
   auth: "api_key",
   models: Object.keys(MODELS),
@@ -37,11 +56,12 @@ export const meta = {
     { method: "POST", path: "/routek/api/v3/contents/generations/tasks", type: "submit", decode: "createTask", render: "taskCreated", models: Object.keys(MODELS).filter(model => MODELS[model].kind === "ark") },
     { method: "GET", path: "/routek/api/v3/contents/generations/tasks/:task_id", type: "query", render: "taskStatus" },
   ],
-  usageSchema: { seconds: SECONDS, resolution: { enum: ["480p", "720p", "1080p"], description: RESOLUTION } },
+  usageSchema: { ...ARK_USAGE_FIELDS, resolution: { enum: ["480p", "720p", "1080p"], description: RESOLUTION } },
+  usageExamples: ARK_USAGE_EXAMPLES,
   usageProfiles: Object.entries(MODELS).map(([model, config]) => ({
     models: [model],
-    schema: { seconds: SECONDS, resolution: { enum: config.resolutions, description: RESOLUTION } },
-    examples: [{ label: "720p · 6s", facts: { seconds: 6, resolution: "720p" } }],
+    schema: { ...(config.kind === "ark" ? ARK_USAGE_FIELDS : { seconds: SECONDS }), resolution: { enum: config.resolutions, description: RESOLUTION } },
+    examples: config.kind === "ark" ? ARK_USAGE_EXAMPLES : [{ label: "720p · 6s", facts: { seconds: 6, resolution: "720p" } }],
   })),
 };
 
@@ -217,7 +237,7 @@ function decodeRequest(ctx) {
       if (!Array.isArray(values) || values.length !== 1) throw new Error("Each parameter must be provided once: " + key);
       let value = values[0];
       if (["media", "metadata", "content", "images", "image_refs", "video_refs", "audio_refs", "reference_audios"].includes(key)) {
-        try { value = JSON.parse(value); } catch (_) { throw new Error(key + " must contain valid JSON"); }
+        try { value = JSON.parse(value); } catch { throw new Error(key + " must contain valid JSON"); }
       } else if (["duration", "seed"].includes(key)) {
         if (!/^-?[0-9]+$/.test(value)) throw new Error(key + " must be an integer");
         value = Number(value);
@@ -263,26 +283,52 @@ export function buildSubmitRequest(ctx) {
 export function parseSubmitResponse(ctx, response) {
   const body = response.body || {};
   const result = { taskId: taskID(body.id), taskData: body };
+  const model = ctx.upstreamModel || ctx.model;
+  if (modelConfig(model).kind === "ark") {
+    const request = normalizeRequest(ctx.requestBody, model, ctx.assets);
+    result.state = { billing_resolution: request.resolution };
+  }
   const immediate = parseTaskResult({ ...ctx, taskId: result.taskId }, body);
   if (["SUCCESS", "FAILURE"].includes(immediate.status)) result.immediate = immediate;
   return result;
 }
 
 export function extractUsage(ctx) {
-  const body = normalizeRequest(ctx.requestBody, ctx.upstreamModel || ctx.model, ctx.assets);
+  const model = ctx.upstreamModel || ctx.model;
+  const body = normalizeRequest(ctx.requestBody, model, ctx.assets);
   if (ctx.usagePurpose === "billing_ratios") return null;
-  return { seconds: body.duration === undefined ? body.seconds : body.duration, resolution: body.resolution };
+  const seconds = body.duration === undefined ? body.seconds : body.duration;
+  const facts = { seconds, resolution: body.resolution };
+  if (modelConfig(model).kind === "ark") {
+    // Reserve output seconds only. Input duration is not available as trusted
+    // asset metadata; completion settles all processing from actual token use.
+    facts.billable_seconds = seconds;
+    facts.video_input = body.content.some(item => item.type === "video_url") ? "video" : "none";
+  }
+  return facts;
 }
 
 export function extractUsageOnComplete(ctx, result, body) {
   if (result.status !== "SUCCESS" || !body || typeof body !== "object" || Array.isArray(body)) return {};
   const config = modelConfig(ctx.upstreamModel || ctx.model);
   const facts = {};
-  // Measured duration replaces the frozen reservation only when valid. Token
-  // usage and timestamps never become seconds or arbitrary pricing ratios.
+  // Physical output duration stays separate from aggregate billing seconds,
+  // preserving existing per-output-second expressions for in-flight tasks.
   const seconds = body.duration === undefined ? body.seconds : body.duration;
   if (Number.isSafeInteger(seconds) && seconds >= (config.min || 1) && seconds <= (config.max || 3600)) facts.seconds = seconds;
   if (config.resolutions.includes(body.resolution)) facts.resolution = body.resolution;
+  if (config.kind === "ark") {
+    const resolution = facts.resolution || ctx.state && ctx.state.billing_resolution;
+    const usage = body.usage;
+    if (config.resolutions.includes(resolution) && usage && typeof usage === "object" && !Array.isArray(usage)) {
+      // Routek settles total_tokens. completion_tokens is a compatibility
+      // fallback only when total_tokens is absent, never when it is invalid.
+      const tokens = usage.total_tokens === undefined ? usage.completion_tokens : usage.total_tokens;
+      if (typeof tokens === "number" && Number.isFinite(tokens) && Number.isInteger(tokens) && tokens >= 0) {
+        facts.billable_seconds = tokens / TOKENS_PER_SECOND[resolution];
+      }
+    }
+  }
   return facts;
 }
 

@@ -166,19 +166,22 @@ func TestRegistryDecodesAndValidatesUsageSchema(t *testing.T) {
 		`["model"]`,
 		`usageSchema: {
 			duration: {type: "number", unit: "second", description: "Generated video duration."},
+			standard_seconds: {type: "number", unit: "second", aggregate: true},
 			count: {type: "number", unit: "count"},
 			tokens: {type: "number", unit: "token", description: "Upstream billing tokens."},
 			credits: {type: "number", unit: "credit", description: "Vendor resource-pack units."},
 			mode: {enum: ["std", "pro"], description: "Provider quality tier."},
 			generate_audio: {type: "boolean", description: "Whether audio is generated."},
 		},
-		usageExamples: [{label: "std · 1s", facts: {duration: 1, count: 1, tokens: 1, credits: 1, mode: "std", generate_audio: true}}],`,
+		usageExamples: [{label: "std · 1s", facts: {duration: 1, standard_seconds: 4000.125, count: 1, tokens: 1, credits: 1, mode: "std", generate_audio: true}}],`,
 		"",
 	)
 	plugin, err := CompilePlugin(valid, Options{})
 	require.NoError(t, err)
 	assert.Equal(t, "number", plugin.Meta.UsageSchema["duration"].Type)
 	assert.Equal(t, "second", plugin.Meta.UsageSchema["duration"].Unit)
+	assert.False(t, plugin.Meta.UsageSchema["duration"].Aggregate)
+	assert.True(t, plugin.Meta.UsageSchema["standard_seconds"].Aggregate)
 	assert.Equal(t, LocalizedText{"en": "Generated video duration."}, plugin.Meta.UsageSchema["duration"].Description)
 	assert.Equal(t, "number", plugin.Meta.UsageSchema["count"].Type)
 	assert.Equal(t, "count", plugin.Meta.UsageSchema["count"].Unit)
@@ -195,12 +198,48 @@ func TestRegistryDecodesAndValidatesUsageSchema(t *testing.T) {
 	require.Len(t, plugin.Meta.UsageExamples, 1)
 	assert.Equal(t, "std · 1s", plugin.Meta.UsageExamples[0].Label)
 	assert.Equal(t, int64(1), plugin.Meta.UsageExamples[0].Facts["tokens"])
+	assert.Equal(t, 4000.125, plugin.Meta.UsageExamples[0].Facts["standard_seconds"])
 
 	tests := []struct {
 		name          string
 		declaration   string
 		expectedError string
 	}{
+		{
+			name:          "aggregate must be true",
+			declaration:   `{type: "number", unit: "second", aggregate: false}`,
+			expectedError: "aggregate must be true when declared",
+		},
+		{
+			name:          "aggregate rejects a string",
+			declaration:   `{type: "number", unit: "second", aggregate: "true"}`,
+			expectedError: "aggregate must be true when declared",
+		},
+		{
+			name:          "aggregate rejects null",
+			declaration:   `{type: "number", unit: "second", aggregate: null}`,
+			expectedError: "aggregate must be true when declared",
+		},
+		{
+			name:          "aggregate rejects count",
+			declaration:   `{type: "number", unit: "count", aggregate: true}`,
+			expectedError: "aggregate requires a number field with second unit",
+		},
+		{
+			name:          "aggregate rejects token",
+			declaration:   `{type: "number", unit: "token", aggregate: true}`,
+			expectedError: "aggregate requires a number field with second unit",
+		},
+		{
+			name:          "aggregate rejects boolean",
+			declaration:   `{type: "boolean", aggregate: true}`,
+			expectedError: "aggregate requires a number field with second unit",
+		},
+		{
+			name:          "aggregate rejects enum",
+			declaration:   `{enum: ["std"], aggregate: true}`,
+			expectedError: "aggregate requires a number field with second unit",
+		},
 		{
 			name:          "unsupported numeric unit",
 			declaration:   `{type: "number", unit: "minute"}`,
@@ -463,6 +502,11 @@ func TestRegistryValidatesUsageExamples(t *testing.T) {
 		{
 			name:          "second value must stay within the duration bound",
 			metaFields:    `usageSchema: {seconds: {type: "number", unit: "second"}}, usageExamples: [{label: "too long", facts: {seconds: 3601}}],`,
+			expectedError: "exceeds the host limit",
+		},
+		{
+			name:          "aggregate second example stays within the validation scale",
+			metaFields:    `usageSchema: {seconds: {type: "number", unit: "second", aggregate: true}}, usageExamples: [{label: "overflow", facts: {seconds: 2147483648}}],`,
 			expectedError: "exceeds the host limit",
 		},
 		{

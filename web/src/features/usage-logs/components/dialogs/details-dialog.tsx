@@ -340,6 +340,10 @@ function BillingBreakdown(props: {
     !Array.isArray(other.usage_facts)
       ? Object.entries(other.usage_facts)
       : []
+  const hasStandardSeconds =
+    typeof other.usage_facts?.billable_seconds === 'number' &&
+    Number.isFinite(other.usage_facts.billable_seconds) &&
+    other.usage_facts.billable_seconds >= 0
 
   return (
     <DetailSection label={t('Billing Details')}>
@@ -351,14 +355,38 @@ function BillingBreakdown(props: {
           <Label className='text-xs font-semibold'>
             {t('Usage parameters')}
           </Label>
-          {usageFacts.map(([key, value]) => (
-            <DetailRow
-              key={`usage-fact-${key}`}
-              label={key}
-              value={String(value)}
-              mono
-            />
-          ))}
+          {usageFacts.map(([key, value]) => {
+            let label = key
+            let displayValue = String(value)
+            if (hasStandardSeconds) {
+              if (key === 'seconds') {
+                label = t('Output video duration (seconds)')
+              }
+              if (key === 'billable_seconds') {
+                label = t('Standard billable seconds')
+              }
+              if (key === 'video_input') {
+                label = t('Reference video processing')
+                if (value === 'video') displayValue = t('Included')
+                if (value === 'none') displayValue = t('Not included')
+              }
+            }
+            return (
+              <DetailRow
+                key={`usage-fact-${key}`}
+                label={label}
+                value={displayValue}
+                mono
+              />
+            )
+          })}
+          {hasStandardSeconds && (
+            <p className='text-muted-foreground pt-1 text-xs leading-5'>
+              {t(
+                'Standard billable seconds measure model processing, including reference video processing when supplied, and may differ from the output video duration.'
+              )}
+            </p>
+          )}
         </>
       )}
       <DetailRow

@@ -63,10 +63,21 @@ func (c *QuotaClamp) AuditMap() map[string]any {
 	if c == nil {
 		return nil
 	}
+	var original any = c.Original
+	// JSON numbers cannot represent non-finite values. Preserve the cause of
+	// saturation as text so the entire billing audit remains serializable.
+	switch {
+	case math.IsInf(c.Original, 1):
+		original = "+Inf"
+	case math.IsInf(c.Original, -1):
+		original = "-Inf"
+	case math.IsNaN(c.Original):
+		original = "NaN"
+	}
 	return map[string]any{
 		"op":       c.Op,
 		"kind":     c.Kind,
-		"original": c.Original,
+		"original": original,
 		"clamped":  c.Clamped,
 	}
 }

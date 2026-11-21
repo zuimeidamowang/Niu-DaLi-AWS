@@ -3,11 +3,14 @@ package plugins
 import (
 	"io/fs"
 	"maps"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/pkg/billingexpr"
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
+	"github.com/QuantumNous/new-api/setting/billing_setting"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -752,7 +755,7 @@ func TestSeedance88ExtendedInputs(t *testing.T) {
 func TestRoutekSeedanceConvertsPlatformMediaAndPreservesGenerationParameters(t *testing.T) {
 	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
 	require.True(t, found)
-	assert.Equal(t, "1.1.0", plugin.Meta.Version)
+	assert.Equal(t, "1.2.0", plugin.Meta.Version)
 	assert.Contains(t, plugin.Meta.RequiredCapabilities, jsplugin.CapabilityMediaAssets)
 	const model = "doubao-seedance-2-5"
 	assets := map[string]any{
@@ -763,10 +766,11 @@ func TestRoutekSeedanceConvertsPlatformMediaAndPreservesGenerationParameters(t *
 		name      string
 		media     []any
 		legacy    bool
+		video     bool
 		wantError string
 	}{
 		{name: "first and last frame", media: []any{map[string]any{"asset_id": "media_image", "role": "first_frame"}, map[string]any{"asset_id": "media_image", "role": "last_frame"}}},
-		{name: "image and video references", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_image"}, map[string]any{"asset_id": "media_video", "role": "reference_video"}}},
+		{name: "image and video references", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_image"}, map[string]any{"asset_id": "media_video", "role": "reference_video"}}, video: true},
 		{name: "legacy text request"},
 		{name: "unknown asset", media: []any{map[string]any{"asset_id": "media_other", "role": "reference_image"}}, wantError: "Media asset is unavailable"},
 		{name: "wrong type", media: []any{map[string]any{"asset_id": "media_image", "role": "reference_video"}}, wantError: "requires a video"},
@@ -817,8 +821,224 @@ func TestRoutekSeedanceConvertsPlatformMediaAndPreservesGenerationParameters(t *
 			var submitted map[string]any
 			require.NoError(t, common.Unmarshal(encoded, &submitted))
 			assert.Equal(t, body, submitted["body"], "the selected driver preserves the normalized request")
+			facts := callRoutekSeedanceHook(t, plugin, "extractUsage", map[string]any{"model": model, "requestBody": body})
+			wantVideoInput := "none"
+			if tc.video {
+				wantVideoInput = "video"
+			}
+			assert.Equal(t, wantVideoInput, facts["video_input"])
 		})
 	}
+}
+
+func callRoutekSeedanceHook(t *testing.T, plugin *jsplugin.LoadedPlugin, hook string, args ...any) map[string]any {
+	t.Helper()
+	value, err := plugin.Engine.Call(t.Context(), hook, args...)
+	require.NoError(t, err)
+	encoded, err := common.Marshal(value)
+	require.NoError(t, err)
+	var result map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &result))
+	return result
+}
+
+func TestRoutekSeedanceBillingSecondsPreserveOutputDuration(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	for _, tc := range []struct {
+		model      string
+		resolution string
+		ratio      string
+		mediaType  string
+	}{
+		{"doubao-seedance-2-0", "720p", "1:1", ""},
+		{"doubao-seedance-2-0-260128", "1080p", "16:9", ""},
+		{"doubao-seedance-2-0-fast", "720p", "9:16", "video_url"},
+		{"doubao-seedance-2-0-fast-260128", "720p", "21:9", ""},
+		{"doubao-seedance-2-0-mini", "720p", "4:3", "image_url"},
+		{"doubao-seedance-2-0-mini-260615", "720p", "3:4", "video_url"},
+		{"doubao-seedance-2-5", "1080p", "9:16", ""},
+		{"doubao-seedance-2-5-260628", "720p", "16:9", "audio_url"},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			request := map[string]any{"prompt": "a walking cat", "duration": 6, "resolution": tc.resolution, "ratio": tc.ratio}
+			if tc.mediaType != "" {
+				roles := map[string]string{"image_url": "reference_image", "video_url": "reference_video", "audio_url": "reference_audio"}
+				request["content"] = []any{map[string]any{"type": tc.mediaType, tc.mediaType: map[string]any{"url": "https://media.example/reference"}, "role": roles[tc.mediaType]}}
+			}
+			ctx := map[string]any{"model": tc.model, "upstreamModel": tc.model, "requestBody": request}
+			facts := callRoutekSeedanceHook(t, plugin, "extractUsage", ctx)
+			wantVideoInput := "none"
+			if tc.mediaType == "video_url" {
+				wantVideoInput = "video"
+			}
+			assert.Equal(t, map[string]any{"seconds": float64(6), "billable_seconds": float64(6), "resolution": tc.resolution, "video_input": wantVideoInput}, facts)
+			schema, _ := plugin.Meta.UsageForModels(tc.model)
+			assert.Equal(t, "second", schema["billable_seconds"].Unit)
+			assert.True(t, schema["billable_seconds"].Aggregate)
+			assert.NotContains(t, schema, "tokens", "retail price inputs stay in seconds")
+			ctx["usagePurpose"] = "billing_ratios"
+			value, err := plugin.Engine.Call(t.Context(), "extractUsage", ctx)
+			require.NoError(t, err)
+			assert.Nil(t, value, "usage facts must not become legacy pricing multipliers")
+		})
+	}
+
+	t.Run("legacy models keep their per-second facts", func(t *testing.T) {
+		for _, model := range []string{"sd-2.5-ch4", "SD2.0满血稳定933"} {
+			ctx := map[string]any{"model": model, "requestBody": map[string]any{"prompt": "a cat", "duration": 6}}
+			facts := callRoutekSeedanceHook(t, plugin, "extractUsage", ctx)
+			assert.Equal(t, map[string]any{"seconds": float64(6), "resolution": "720p"}, facts)
+			completed := callRoutekSeedanceHook(t, plugin, "extractUsageOnComplete", ctx, map[string]any{"status": "SUCCESS"}, map[string]any{"duration": 6, "resolution": "720p", "usage": map[string]any{"total_tokens": 216899}})
+			assert.Equal(t, facts, completed)
+			schema, _ := plugin.Meta.UsageForModels(model)
+			assert.NotContains(t, schema, "billable_seconds")
+			assert.NotContains(t, schema, "video_input")
+		}
+	})
+}
+
+func TestRoutekSeedanceCompletionBillingSeconds(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	for _, tc := range []struct {
+		name       string
+		usage      any
+		resolution string
+		state      map[string]any
+		wantTokens float64
+		wantBill   bool
+		status     string
+	}{
+		{name: "total tokens take precedence", usage: map[string]any{"total_tokens": 216899, "completion_tokens": 129600}, resolution: "720p", wantTokens: 216899, wantBill: true},
+		{name: "explicit zero is measured usage", usage: map[string]any{"total_tokens": 0, "completion_tokens": 216899}, resolution: "720p", wantBill: true},
+		{name: "completion tokens when total is absent", usage: map[string]any{"completion_tokens": 129600}, resolution: "720p", wantTokens: 129600, wantBill: true},
+		{name: "1080p conversion", usage: map[string]any{"total_tokens": 291600}, resolution: "1080p", wantTokens: 291600, wantBill: true},
+		{name: "submitted resolution survives missing result", usage: map[string]any{"total_tokens": 216899}, state: map[string]any{"billing_resolution": "720p"}, wantTokens: 216899, wantBill: true},
+		{name: "no resolution is not guessed", usage: map[string]any{"total_tokens": 216899}},
+		{name: "missing usage", resolution: "720p"},
+		{name: "missing token fields", usage: map[string]any{}, resolution: "720p"},
+		{name: "array usage", usage: []any{216899}, resolution: "720p"},
+		{name: "null total does not fall back", usage: map[string]any{"total_tokens": nil, "completion_tokens": 216899}, resolution: "720p"},
+		{name: "negative total does not fall back", usage: map[string]any{"total_tokens": -1, "completion_tokens": 216899}, resolution: "720p"},
+		{name: "fractional total", usage: map[string]any{"total_tokens": 1.5}, resolution: "720p"},
+		{name: "string total", usage: map[string]any{"total_tokens": "216899"}, resolution: "720p"},
+		{name: "NaN total", usage: map[string]any{"total_tokens": math.NaN()}, resolution: "720p"},
+		{name: "infinite total", usage: map[string]any{"total_tokens": math.Inf(1)}, resolution: "720p"},
+		{name: "huge finite integer is retained for host saturation", usage: map[string]any{"total_tokens": 1e30}, resolution: "720p", wantTokens: 1e30, wantBill: true},
+		{name: "non-success does not settle", usage: map[string]any{"total_tokens": 216899}, resolution: "720p", status: "IN_PROGRESS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status := tc.status
+			if status == "" {
+				status = "SUCCESS"
+			}
+			ctx := map[string]any{"model": "doubao-seedance-2-5", "state": tc.state}
+			body := map[string]any{"duration": 6, "usage": tc.usage}
+			if tc.resolution != "" {
+				body["resolution"] = tc.resolution
+			}
+			facts := callRoutekSeedanceHook(t, plugin, "extractUsageOnComplete", ctx, map[string]any{"status": status}, body)
+			if status != "SUCCESS" {
+				assert.Empty(t, facts)
+				return
+			}
+			assert.Equal(t, float64(6), facts["seconds"], "output duration must remain physical duration")
+			if !tc.wantBill {
+				assert.NotContains(t, facts, "billable_seconds", "invalid or absent usage must preserve the frozen estimate")
+				return
+			}
+			tokensPerSecond := float64(21600)
+			if tc.resolution == "1080p" {
+				tokensPerSecond = 48600
+			}
+			assert.Equal(t, tc.wantTokens/tokensPerSecond, facts["billable_seconds"])
+			assert.NotContains(t, facts, "input_seconds", "aggregate usage does not reveal physical input duration")
+		})
+	}
+}
+
+func TestRoutekSeedanceBillableSecondsMatchMeasuredTokenCost(t *testing.T) {
+	plugin, found := jsplugin.DefaultRegistry.Generation().Get("routek-seedance")
+	require.True(t, found)
+	ctx := map[string]any{"model": "doubao-seedance-2-0-mini", "requestBody": map[string]any{"prompt": "a cat", "duration": 6, "resolution": "720p"}}
+	estimated := callRoutekSeedanceHook(t, plugin, "extractUsage", ctx)
+	submission := callRoutekSeedanceHook(t, plugin, "parseSubmitResponse", ctx, map[string]any{"body": map[string]any{"id": "upstream_test", "status": "queued"}})
+	state, ok := submission["state"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "720p", state["billing_resolution"])
+	completed := callRoutekSeedanceHook(t, plugin, "extractUsageOnComplete", map[string]any{"model": ctx["model"], "state": state}, map[string]any{"status": "SUCCESS"}, map[string]any{"duration": 6, "usage": map[string]any{"total_tokens": 216899}})
+	actual := maps.Clone(estimated)
+	maps.Copy(actual, completed)
+	assert.Equal(t, float64(6), actual["seconds"])
+	assert.InDelta(t, 10.04162037037037, actual["billable_seconds"], 1e-12)
+
+	for _, tc := range []struct {
+		name       string
+		facts      map[string]any
+		expression string
+		wantQuota  int
+	}{
+		{"initial reservation", estimated, `tier("720p", u("billable_seconds") * 0.4968)`, 1266840},
+		{"measured final charge", actual, `tier("720p", u("billable_seconds") * 0.4968)`, 2120188},
+		{"legacy second price remains compatible", actual, `tier("720p", u("seconds") * 0.5)`, 1275000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := billingexpr.ComputeTieredQuotaWithRequest(&billingexpr.BillingSnapshot{ExprString: tc.expression, ExprHash: billingexpr.ExprHashString(tc.expression), GroupRatio: 0.85, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true}, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: tc.facts})
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantQuota, result.ActualQuotaAfterGroup)
+		})
+	}
+	tokenExpression := `tier("base", u("tokens") * 23 / 1000000)`
+	tokenResult, err := billingexpr.ComputeTieredQuotaWithRequest(&billingexpr.BillingSnapshot{ExprString: tokenExpression, ExprHash: billingexpr.ExprHashString(tokenExpression), GroupRatio: 0.85, QuotaPerUnit: 500000, ExprVersion: 1, TaskUsageBilling: true}, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: map[string]any{"tokens": float64(216899)}})
+	require.NoError(t, err)
+	assert.Equal(t, 2120188, tokenResult.ActualQuotaAfterGroup)
+
+	t.Run("provider scoped migration prices preserve upstream rate branches", func(t *testing.T) {
+		for _, tc := range []struct {
+			models     []string
+			expression string
+			rate       float64
+		}{
+			{[]string{"doubao-seedance-2-0", "doubao-seedance-2-0-260128"}, `u("resolution") == "1080p" ? tier("1080p", u("billable_seconds") * 2.2356) : u("resolution") == "480p" ? tier("480p", u("billable_seconds") * 0.441945) : tier("720p", u("billable_seconds") * 0.9936)`, 46},
+			{[]string{"doubao-seedance-2-0-fast", "doubao-seedance-2-0-fast-260128"}, `u("resolution") == "480p" ? tier("480p", u("billable_seconds") * 0.3554775) : tier("720p", u("billable_seconds") * 0.7992)`, 37},
+			{[]string{"doubao-seedance-2-0-mini", "doubao-seedance-2-0-mini-260615"}, `u("resolution") == "480p" ? tier("480p", u("billable_seconds") * 0.2209725) : tier("720p", u("billable_seconds") * 0.4968)`, 23},
+			{[]string{"doubao-seedance-2-5", "doubao-seedance-2-5-260628"}, `u("resolution") == "1080p" ? (u("video_input") == "video" ? tier("1080p_reference_video", u("billable_seconds") * 2.2356) : tier("1080p", u("billable_seconds") * 3.7422)) : u("resolution") == "480p" ? (u("video_input") == "video" ? tier("480p_reference_video", u("billable_seconds") * 0.403515) : tier("480p", u("billable_seconds") * 0.672525)) : (u("video_input") == "video" ? tier("720p_reference_video", u("billable_seconds") * 0.9072) : tier("720p", u("billable_seconds") * 1.512))`, 70},
+		} {
+			for _, model := range tc.models {
+				t.Run(model, func(t *testing.T) {
+					schema, _ := plugin.Meta.UsageForModel(model)
+					require.NoError(t, billing_setting.SmokeTestTaskExpr(tc.expression, schema))
+					for _, resolution := range schema["resolution"].Enum {
+						for _, videoInput := range []string{"none", "video"} {
+							rate := tc.rate
+							if tc.rate == 70 {
+								if resolution == "1080p" {
+									rate = 77
+									if videoInput == "video" {
+										rate = 46
+									}
+								} else if videoInput == "video" {
+									rate = 42
+								}
+							}
+							for _, tokens := range []float64{0, 216000} {
+								facts := callRoutekSeedanceHook(t, plugin, "extractUsageOnComplete", map[string]any{"model": model}, map[string]any{"status": "SUCCESS"}, map[string]any{"duration": 6, "resolution": resolution, "usage": map[string]any{"total_tokens": tokens}})
+								facts["video_input"] = videoInput
+								for _, group := range []float64{0.8, 0.85} {
+									result, err := billingexpr.ComputeTieredQuotaWithRequest(&billingexpr.BillingSnapshot{ExprString: tc.expression, ExprHash: billingexpr.ExprHashString(tc.expression), GroupRatio: group, QuotaPerUnit: 500000, TaskUsageBilling: true}, billingexpr.TokenParams{}, billingexpr.RequestInput{Usage: facts})
+									require.NoError(t, err)
+									wantUSD := tokens * rate / 1000000
+									assert.InDelta(t, wantUSD, result.ActualQuotaBeforeGroup/500000, 1e-12, "%s/%s/%s", model, resolution, videoInput)
+									assert.Equal(t, common.QuotaRound(wantUSD*500000*group), result.ActualQuotaAfterGroup)
+								}
+							}
+						}
+					}
+				})
+			}
+		}
+	})
 }
 
 func TestRoutekSeedanceAcceptsUpstreamGatewayPollStatuses(t *testing.T) {

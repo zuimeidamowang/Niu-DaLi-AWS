@@ -352,6 +352,17 @@ example doubao `usage.completion_tokens`). `credit` is the host unit for vendor
 resource-pack units (for example kling `final_unit_deduction`). Both share the
 int32 quota bound, not the 3600-second / 128-count limits.
 
+A numeric `second` fact may opt into `aggregate: true` to represent cumulative
+standard billing seconds rather than one request's video duration. Runtime
+validation preserves any finite, non-negative value, including fractional values
+and quantities above 3600, without converting or clamping the quantity to quota.
+The expression still returns a monetary cost; its final centralized
+`QuotaRoundChecked` conversion supplies monetary saturation and audit metadata.
+Ordinary second facts remain bounded by 3600. Canonical request durations are
+validated before the usage schema, so declaring an aggregate fact never relaxes
+the duration limit of an actual video request. The field is valid only as
+`aggregate: true` on `type: "number", unit: "second"` and does not change API v1.
+
 Task usage billing has a deliberately different conversion rule from token
 billing:
 
@@ -402,8 +413,10 @@ range tiers are not part of the current canonical shape. Request rules after
 
 Before saving, the host compiles every expression, rejects literal `u()` keys
 that the selected task plugin did not declare, and smoke-tests usage vectors.
-Every numeric field is exercised at 0, 1, and its host-owned unit ceiling
-(`second` 3600, `count` 128, `token`/`credit` int32 max). Enum values are exercised as a
+Every numeric field is exercised at 0, 1, and its host-owned validation scale
+(`second` 3600, `count` 128, `token`/`credit` and aggregate seconds int32 max).
+The aggregate-second scale also bounds display examples, but is not a runtime
+ceiling on cumulative quantities. Enum values are exercised as a
 Cartesian product. Smoke vectors are capped at
 64, reducing oversized enum dimensions to their first and last values. Every
 evaluated result must be finite and non-negative.
